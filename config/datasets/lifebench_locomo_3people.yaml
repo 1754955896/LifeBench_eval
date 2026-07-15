@@ -1,0 +1,24 @@
+# LifeBench Locomo 3 People Dataset Configuration
+# Subset of lifebench_locomo_format with first 3 persons
+
+name: "lifebench_locomo_3people"
+version: "1.0"
+description: "Subset of lifebench_locomo_format, 3 persons / ~1013 QA"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_locomo_3people/lifebench_locomo_3people.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    provider: "openai"
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 1

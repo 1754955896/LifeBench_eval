@@ -1,0 +1,24 @@
+# LifeBench Dataset Configuration
+# Multi-source life memory benchmark
+
+name: "lifebench"
+version: "2.0"
+description: "Multi-source life memory benchmark, 10 persons / 3380 QA"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    provider: "openai"
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 3

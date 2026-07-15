@@ -1,0 +1,24 @@
+# Smoke Dataset Configuration
+# Small test dataset from lifebench_locomo_format
+
+name: "smoke"
+version: "1.0"
+description: "Smoke test dataset - 2 persons, 14 sessions, 3 QAs each"
+
+# Memory language setting
+memory_language: "en"
+
+# Data configuration
+data:
+  path: "../datasets/smoke/smoke_data.json"
+  format: "locomo"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    provider: "openai"
+    model: "${LLM_MODEL:deepseek-chat}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  num_runs: 1

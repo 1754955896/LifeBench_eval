@@ -1,0 +1,24 @@
+# Locomo Smoke Dataset Configuration
+# Small English test dataset from locomo format
+
+name: "locomo_smoke"
+version: "1.0"
+description: "Locomo smoke test dataset - 1 person (Caroline/Melanie), 35 sessions, 1 QA"
+
+# Memory language setting
+memory_language: "en"
+
+# Data configuration
+data:
+  path: "../datasets/smoke/locomo_smoke.json"
+  format: "locomo"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    provider: "openai"
+    model: "${LLM_MODEL:deepseek-chat}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  num_runs: 1

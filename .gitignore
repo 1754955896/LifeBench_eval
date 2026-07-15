@@ -1,0 +1,41 @@
+# Environment
+.env
+env.template
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output & results
+output/
+results/
+
+# Project subdirectories
+systems/
+tests/
+
+# System config files (contain API keys)
+config/systems/memos_cloud_blocking.yaml
+config/systems/memos_cloud.yaml
+config/systems/zep_cloud.yaml
+
+# OS
+.DS_Store
+Thumbs.db
