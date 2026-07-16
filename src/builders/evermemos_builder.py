@@ -80,7 +80,7 @@ class EverMemOSBuilder(BaseBuilder):
 
         # Wait for docker services to be ready
         logger.info("Waiting for docker services to be ready...")
-        time.sleep(10)
+        time.sleep(45)
 
         # 2. Start FastAPI server
         if not await self._start_api_server(project_root):
@@ -174,6 +174,12 @@ class EverMemOSBuilder(BaseBuilder):
             logger.error("run.py not found: %s", run_py)
             return False
 
+        # Use the venv Python from EverMemOS_bz
+        venv_python = project_root / "systems" / "EverMemOS_bz" / ".venv" / "Scripts" / "python.exe"
+        if not venv_python.exists():
+            logger.error("EverMemOS venv Python not found: %s", venv_python)
+            return False
+
         # Check if API server is already running
         try:
             import aiohttp
@@ -188,9 +194,12 @@ class EverMemOSBuilder(BaseBuilder):
         try:
             logger.info("Starting FastAPI server: %s", run_py)
 
-            # Start server process
+            # env_file is relative to project_root (LifeBench_eval)
+            env_file_path = project_root / self.env_file
+
+            # Start server process using venv Python
             self._api_process = subprocess.Popen(
-                [sys.executable, str(run_py), "--port", "8001"],
+                [str(venv_python), str(run_py), "--port", "8001", "--env-file", str(env_file_path)],
                 cwd=str(evermemos_src),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -217,9 +226,14 @@ class EverMemOSBuilder(BaseBuilder):
                 ) as session:
                     async with session.get(f"{self.api_url}/docs") as resp:
                         if resp.status == 200:
-                            elapsed = time.time() - start_time
-                            logger.info("API server ready after %.1fs", elapsed)
-                            return True
+                            # Server is up, but wait a bit more for lifespan to complete
+                            await asyncio.sleep(3)
+                            # Double-check it's still up
+                            async with session.get(f"{self.api_url}/docs") as resp2:
+                                if resp2.status == 200:
+                                    elapsed = time.time() - start_time
+                                    logger.info("API server ready after %.1fs", elapsed)
+                                    return True
             except Exception:
                 pass
 

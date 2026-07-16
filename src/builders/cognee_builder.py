@@ -43,11 +43,24 @@ def _load_env_config(project_env: Path) -> dict:
     config["embedding_base_url"] = os.environ.get("VECTORIZE_BASE_URL", "https://api.siliconflow.cn/v1")
     config["embedding_model"] = os.environ.get("VECTORIZE_MODEL", "Qwen/Qwen3-Embedding-4B")
     config["embedding_dimensions"] = os.environ.get("VECTORIZE_DIMENSIONS", "1024")
+    config["embedding_timeout"] = os.environ.get("VECTORIZE_TIMEOUT", "60")
+    config["embedding_max_retries"] = os.environ.get("VECTORIZE_MAX_RETRIES", "3")
+    config["embedding_batch_size"] = os.environ.get("VECTORIZE_BATCH_SIZE", "10")
+    config["embedding_max_concurrent"] = os.environ.get("VECTORIZE_MAX_CONCURRENT", "3")
+    config["embedding_encoding_format"] = os.environ.get("VECTORIZE_ENCODING_FORMAT", "float")
 
     # Rerank config (optional)
     config["rerank_api_key"] = os.environ.get("RERANK_API_KEY", os.environ.get("VECTORIZE_API_KEY", ""))
     config["rerank_base_url"] = os.environ.get("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")
-    config["rerank_model"] = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    config["rerank_model"] = os.environ.get("RERANK_MODEL", "Qwen/Qwen3-Reranker-4B")
+    config["rerank_timeout"] = os.environ.get("RERANK_TIMEOUT", "30")
+    config["rerank_max_retries"] = os.environ.get("RERANK_MAX_RETRIES", "3")
+    config["rerank_batch_size"] = os.environ.get("RERANK_BATCH_SIZE", "10")
+    config["rerank_max_concurrent"] = os.environ.get("RERANK_MAX_CONCURRENT", "5")
+
+    # Environment & Logging
+    config["log_level"] = os.environ.get("LOG_LEVEL", "INFO")
+    config["env"] = os.environ.get("ENV", "local")
 
     return config
 
@@ -59,12 +72,24 @@ class CogneeBuilder(BaseBuilder):
     Configuration:
         docker_compose: Path to docker-compose.yaml (relative to project root)
         docker_wait: Seconds to wait after starting services (default 60)
+        enable_neo4j: Enable Neo4j graph database (default False)
+        enable_redis: Enable Redis caching (default False)
+
+    Complete Environment Configuration:
+        - LLM: DeepSeek via OpenAI-compatible API
+        - Embedding: SiliconFlow Vectorize (Qwen/Qwen3-Embedding-4B)
+        - Rerank: SiliconFlow (Qwen/Qwen3-Reranker-4B)
+        - Vector DB: pgvector (PostgreSQL)
+        - Graph DB: PostgreSQL (or Neo4j if enabled)
+        - Cache: Redis (if enabled)
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
         self.docker_compose = config.get("docker_compose")
         self.docker_wait = config.get("docker_wait", 60)
+        self.enable_neo4j = config.get("enable_neo4j", False)
+        self.enable_redis = config.get("enable_redis", False)
         self._started = False
 
     async def build(self) -> bool:
@@ -178,13 +203,30 @@ LLM_ENDPOINT={env_config['llm_base_url']}
 # Disable DeepSeek thinking mode to avoid tool_choice incompatibility
 LLM_ARGS={llm_args_json}
 
-# =================== Embedding Config ===================
+# =================== Embedding Config (SiliconFlow Vectorize) ===================
 # Use openai_compatible provider for SiliconFlow (uses openai SDK directly)
 EMBEDDING_PROVIDER=openai_compatible
 EMBEDDING_MODEL={env_config['embedding_model']}
 EMBEDDING_DIMENSIONS={env_config['embedding_dimensions']}
 EMBEDDING_API_KEY={env_config['embedding_api_key']}
 EMBEDDING_ENDPOINT={env_config['embedding_base_url']}
+# Complete Vectorize parameters
+VECTORIZE_TIMEOUT={env_config['embedding_timeout']}
+VECTORIZE_MAX_RETRIES={env_config['embedding_max_retries']}
+VECTORIZE_BATCH_SIZE={env_config['embedding_batch_size']}
+VECTORIZE_MAX_CONCURRENT={env_config['embedding_max_concurrent']}
+VECTORIZE_ENCODING_FORMAT={env_config['embedding_encoding_format']}
+
+# =================== Rerank Config (SiliconFlow) ===================
+RERANK_PROVIDER=siliconflow
+RERANK_API_KEY={env_config['rerank_api_key']}
+RERANK_BASE_URL={env_config['rerank_base_url']}
+RERANK_MODEL={env_config['rerank_model']}
+# Complete Rerank parameters
+RERANK_TIMEOUT={env_config['rerank_timeout']}
+RERANK_MAX_RETRIES={env_config['rerank_max_retries']}
+RERANK_BATCH_SIZE={env_config['rerank_batch_size']}
+RERANK_MAX_CONCURRENT={env_config['rerank_max_concurrent']}
 
 # =================== Database Config (PostgreSQL) ===================
 DB_PROVIDER=postgres
@@ -205,8 +247,8 @@ SYSTEM_ROOT_DIRECTORY=/app/data/.cognee_system
 DATA_ROOT_DIRECTORY=/app/data/.cognee_data
 
 # =================== API Config ===================
-ENV=local
-LOG_LEVEL=INFO
+ENV={env_config['env']}
+LOG_LEVEL={env_config['log_level']}
 CORS_ALLOWED_ORIGINS=*
 
 # Disable multi-user auth for local testing
@@ -220,7 +262,9 @@ COGNEE_SKIP_CONNECTION_TEST=true
                 f.write(env_content)
             logger.info(f"Created .env file: {env_path}")
             logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
-            logger.info(f"  Embedding: {env_config['embedding_model']} ({env_config['embedding_dimensions']} dims) @ {env_config['embedding_base_url']}")
+            logger.info(f"  Embedding: {env_config['embedding_model']} ({env_config['embedding_dimensions']} dims, batch={env_config['embedding_batch_size']}, timeout={env_config['embedding_timeout']}s) @ {env_config['embedding_base_url']}")
+            logger.info(f"  Rerank: {env_config['rerank_model']} (timeout={env_config['rerank_timeout']}s, batch={env_config['rerank_batch_size']}) @ {env_config['rerank_base_url']}")
+            logger.info(f"  Log Level: {env_config['log_level']}, Env: {env_config['env']}")
             return True
         except Exception as e:
             logger.error(f"Failed to create .env file: {e}")
@@ -234,46 +278,94 @@ COGNEE_SKIP_CONNECTION_TEST=true
             return False
 
         try:
-            # Check if containers are already running
+            # Start postgres first (always needed)
             result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "-q"],
+                ["docker", "compose", "-f", str(compose_path), "ps", "postgres"],
                 capture_output=True,
                 text=True,
             )
-            if result.stdout.strip():
-                logger.info("Docker services already running")
-                return True
+            if "Up" not in result.stdout:
+                logger.info(f"Starting postgres: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "postgres"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start postgres failed: {result.stderr}")
+                    return False
 
-            # Start postgres first, then cognee
-            logger.info(f"Starting postgres: {self.docker_compose}")
+                # Wait for postgres to be ready
+                if not await self._wait_for_postgres(project_root):
+                    logger.error("Postgres did not become ready in time")
+                    return False
+            else:
+                logger.info("Postgres already running")
+
+            # Optionally start Neo4j graph database
+            if self.enable_neo4j:
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "ps", "neo4j"],
+                    capture_output=True,
+                    text=True,
+                )
+                if "Up" not in result.stdout:
+                    logger.info(f"Starting neo4j: {self.docker_compose}")
+                    result = subprocess.run(
+                        ["docker", "compose", "-f", str(compose_path), "up", "-d", "neo4j"],
+                        cwd=str(compose_path.parent),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        logger.error(f"Docker start neo4j failed: {result.stderr}")
+                        return False
+                else:
+                    logger.info("Neo4j already running")
+
+            # Optionally start Redis cache
+            if self.enable_redis:
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "ps", "redis"],
+                    capture_output=True,
+                    text=True,
+                )
+                if "Up" not in result.stdout:
+                    logger.info(f"Starting redis: {self.docker_compose}")
+                    result = subprocess.run(
+                        ["docker", "compose", "-f", str(compose_path), "up", "-d", "redis"],
+                        cwd=str(compose_path.parent),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        logger.error(f"Docker start redis failed: {result.stderr}")
+                        return False
+                else:
+                    logger.info("Redis already running")
+
+            # Start cognee (always needed)
             result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "up", "-d", "postgres"],
-                cwd=str(compose_path.parent),
+                ["docker", "compose", "-f", str(compose_path), "ps", "cognee"],
                 capture_output=True,
                 text=True,
             )
-            if result.returncode != 0:
-                logger.error(f"Docker start postgres failed: {result.stderr}")
-                return False
+            if "Up" not in result.stdout:
+                logger.info(f"Starting cognee: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "cognee"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start cognee failed: {result.stderr}")
+                    return False
+            else:
+                logger.info("Cognee already running")
 
-            # Wait for postgres to be ready
-            if not await self._wait_for_postgres(project_root):
-                logger.error("Postgres did not become ready in time")
-                return False
-
-            # Then start cognee
-            logger.info(f"Starting cognee: {self.docker_compose}")
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "up", "-d", "cognee"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f"Docker start cognee failed: {result.stderr}")
-                return False
-
-            logger.info("Docker services started")
+            logger.info("Docker services ready")
             return True
 
         except Exception as e:
@@ -285,7 +377,7 @@ COGNEE_SKIP_CONNECTION_TEST=true
         import urllib.request
         import urllib.error
 
-        max_retries = 30  # 30 * 2s = 60s
+        max_retries = 90  # 90 * 2s = 180s
         for attempt in range(max_retries):
             try:
                 # Check postgres health via docker inspect
@@ -305,7 +397,7 @@ COGNEE_SKIP_CONNECTION_TEST=true
             if attempt < max_retries - 1:
                 time.sleep(2)
 
-        logger.error("Postgres did not become healthy in 60s")
+        logger.error("Postgres did not become healthy in 180s")
         return False
 
     async def _wait_for_api(self) -> bool:
@@ -352,4 +444,6 @@ COGNEE_SKIP_CONNECTION_TEST=true
             "name": self.__class__.__name__,
             "started": self._started,
             "docker_compose": self.docker_compose,
+            "enable_neo4j": self.enable_neo4j,
+            "enable_redis": self.enable_redis,
         }

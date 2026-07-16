@@ -67,7 +67,7 @@ class GraphitiLocalBuilder(BaseBuilder):
 
     async def build(self) -> bool:
         """
-        Check if Neo4j is running at localhost:7687.
+        Start Neo4j via docker if not running, then verify health.
 
         graphiti_local connects directly to Neo4j, not via HTTP API.
 
@@ -79,6 +79,14 @@ class GraphitiLocalBuilder(BaseBuilder):
             logger.info("Neo4j is already running at localhost:7474")
             self._started = True
             return True
+
+        # Try to start docker services
+        project_root = self._get_project_root()
+        if project_root:
+            logger.info("Neo4j not running, attempting to start docker services...")
+            if await self._start_docker(project_root):
+                self._started = True
+                return True
 
         logger.error("Neo4j is not running at localhost:7474")
         logger.info("Please start Neo4j first")

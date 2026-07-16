@@ -40,7 +40,11 @@ class CogneeAdapter(BaseAdapter):
         self.timeout = config.get("timeout", 300.0)
         self.max_retries = config.get("max_retries", 5)
         self.retry_delay = config.get("retry_delay", 5.0)
-        self.top_k = config.get("top_k", 40)
+
+        # Handle nested search config (search.top_k, search.search_type)
+        search_config = config.get("search", {})
+        self.top_k = search_config.get("top_k", config.get("top_k", 40))
+        self.search_type = search_config.get("search_type", config.get("search_type", "CHUNKS"))
 
         # Concurrency control: limit concurrent requests to avoid overload
         self.max_concurrent = config.get("max_concurrent", 3)
@@ -243,7 +247,7 @@ class CogneeAdapter(BaseAdapter):
                             "query": query,
                             "datasets": [dataset_name],
                             "top_k": top_k,
-                            "search_type": "GRAPH_COMPLETION",
+                            "search_type": self.search_type,
                         },
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as resp:

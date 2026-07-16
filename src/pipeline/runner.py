@@ -117,6 +117,25 @@ class Pipeline:
         date_info: Dict[str, Any],
         stages: List[str],
     ) -> None:
+        import time as time_module
+
+        # Track stage timings
+        stage_timings: Dict[str, Dict[str, float]] = {}
+        add_search_balance_before = None
+        add_search_balance_after = None
+
+        # Track balance before ADD+SEARCH if track_cost enabled
+        if self.track_cost and ("add" in stages or "search" in stages):
+            try:
+                add_search_balance_before = get_deepseek_balance(".env")
+                # Extract total CNY balance
+                for info in add_search_balance_before.get("balance_infos", []):
+                    if info.get("currency") == "CNY":
+                        add_search_balance_before = float(info.get("total_balance", "0"))
+                        break
+            except Exception:
+                add_search_balance_before = None
+
         sorted_dates = date_info["sorted_dates"]
         sessions_by_date = date_info["sessions_by_date"]
         qas_by_date = date_info["qas_by_date"]
@@ -339,6 +358,7 @@ class Pipeline:
                 return result
 
         # Process samples (parallel or serial based on config)
+        add_search_stage_start = time_module.time()
         sample_parallel = self.adapter.config.get("sample_parallel", True)
         if sample_data:
             if sample_parallel:
@@ -358,6 +378,9 @@ class Pipeline:
                     new_srs = [sr for sr in r["search_results"] if sr.question_id not in {s.question_id for s in all_search_results}]
                     all_search_results.extend(new_srs)
                     # Note: save is already done incrementally inside process_sample after each date
+
+        add_search_stage_elapsed = time_module.time() - add_search_stage_start
+        stage_timings["add_search"] = {"elapsed": add_search_stage_elapsed}
 
         # Load individual result files from results/ directory BEFORE answer stage
         # This ensures buffered search results (saved by adapter's _save_search_result) are available
@@ -400,6 +423,7 @@ class Pipeline:
                 print(f"  📂 Loaded {loaded_count} search results from {results_dir}/")
 
         # Phase 3: ANSWER
+        answer_stage_start = time_module.time()
         if "answer" in stages:
             print(f"\n{'=' * 60}")
             print(f"💬 [ANSWER] {len(all_qa_pairs)} QAs total")
@@ -417,8 +441,11 @@ class Pipeline:
                     valid_qas, valid_srs = zip(*valid_pairs)
                     answer_results = await self._run_answer_for_qas_with_progress(list(valid_qas), list(valid_srs))
                     answered_ids.update([ar.question_id for ar in answer_results])
+        answer_stage_elapsed = time_module.time() - answer_stage_start
+        stage_timings["answer"] = {"elapsed": answer_stage_elapsed, "count": len(all_qa_pairs)}
 
         # Phase 4: EVALUATE
+        evaluate_stage_start = time_module.time()
         if "evaluate" in stages:
             print(f"\n{'=' * 60}")
             print("⚖️  [EVALUATE] All answers")
@@ -432,6 +459,24 @@ class Pipeline:
 
                 if self.checkpoint:
                     self.checkpoint.mark_evaluate_complete()
+        evaluate_stage_elapsed = time_module.time() - evaluate_stage_start
+        stage_timings["evaluate"] = {"elapsed": evaluate_stage_elapsed, "count": len(self._results.get("answer_results", []))}
+
+        # Track balance after ADD+SEARCH if track_cost enabled
+        if self.track_cost and ("add" in stages or "search" in stages):
+            try:
+                add_search_balance_after = get_deepseek_balance(".env")
+                for info in add_search_balance_after.get("balance_infos", []):
+                    if info.get("currency") == "CNY":
+                        add_search_balance_after = float(info.get("total_balance", "0"))
+                        break
+            except Exception:
+                add_search_balance_after = None
+
+        # Store stage timings and balance info for report
+        self._results["stage_timings"] = stage_timings
+        self._results["add_search_balance_before"] = add_search_balance_before
+        self._results["add_search_balance_after"] = add_search_balance_after
 
         # Load individual result files from results/ directory (saved by adapter's _save_search_result)
         import json
@@ -554,7 +599,7 @@ class Pipeline:
         qa_pairs: List[Any],
         ordering_info: Dict[str, Any],
     ) -> List[SearchResult]:
-        concurrency = 3  # serial search to avoid overwhelming server
+        concurrency = 10  # serial search to avoid overwhelming server
         semaphore = asyncio.Semaphore(concurrency)
 
         async def search_one(qa):
@@ -967,17 +1012,45 @@ class Pipeline:
             return
 
         eval_result = self._results["eval_result"]
+        stage_timings = self._results.get("stage_timings", {})
+        add_search_balance_before = self._results.get("add_search_balance_before")
+        add_search_balance_after = self._results.get("add_search_balance_after")
+
         lines = [
             "=" * 60,
             "📊 Evaluation Report",
             "=" * 60,
             f"System: {self.adapter.get_system_info()['name']}",
-            f"Time: {elapsed:.2f}s",
+            f"Total Time: {elapsed:.2f}s",
             "",
+        ]
+
+        # Stage timings
+        if stage_timings:
+            lines.append("📈 Stage Timings:")
+            for stage, info in stage_timings.items():
+                stage_name = stage.replace("_", " ").title()
+                elapsed = info.get("elapsed", 0)
+                count = info.get("count", "")
+                count_str = f" ({count} items)" if count else ""
+                lines.append(f"  {stage_name}: {elapsed:.2f}s{count_str}")
+            lines.append("")
+
+        # Balance change for add+search
+        if add_search_balance_before is not None and add_search_balance_after is not None:
+            balance_diff = add_search_balance_before - add_search_balance_after
+            lines.append(f"💰 ADD+SEARCH Balance Change:")
+            lines.append(f"  Before: {add_search_balance_before:.2f} CNY")
+            lines.append(f"  After:  {add_search_balance_after:.2f} CNY")
+            lines.append(f"  Cost:   {balance_diff:.4f} CNY")
+            lines.append("")
+
+        # Evaluation results
+        lines.extend([
             f"Total Questions: {eval_result.total_questions}",
             f"Correct: {eval_result.correct}",
             f"Accuracy: {eval_result.accuracy:.2%}",
-        ]
+        ])
 
         if eval_result.weighted_score is not None:
             lines.append(f"Weighted Score: {eval_result.weighted_score:.2%}")

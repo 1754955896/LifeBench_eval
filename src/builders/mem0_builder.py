@@ -244,41 +244,133 @@ MEM0_RERANKER_TOP_K=10
             return False
 
     async def _start_docker(self, project_root: Path) -> bool:
-        """Start docker compose services."""
+        """Start docker compose services, checking each one individually."""
         compose_path = project_root / self.docker_compose
         if not compose_path.exists():
             logger.error(f"Docker compose file not found: {compose_path}")
             return False
 
         try:
-            # Check if containers are already running
+            # Start postgres first (needed by mem0)
             result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "-q"],
+                ["docker", "compose", "-f", str(compose_path), "ps", "postgres"],
                 capture_output=True,
                 text=True,
             )
-            if result.stdout.strip():
-                logger.info("Docker services already running")
-                return True
+            if "Up" not in result.stdout:
+                logger.info(f"Starting postgres: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "postgres"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start postgres failed: {result.stderr}")
+                    return False
 
-            # Start services
-            logger.info(f"Starting docker services: {self.docker_compose}")
+                # Wait for postgres to be ready
+                if not await self._wait_for_postgres(project_root):
+                    logger.error("Postgres did not become ready in time")
+                    return False
+            else:
+                logger.info("Postgres already running")
+
+            # Start qdrant (vector DB, needed by mem0)
             result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "up", "-d"],
-                cwd=str(compose_path.parent),
+                ["docker", "compose", "-f", str(compose_path), "ps", "qdrant"],
                 capture_output=True,
                 text=True,
             )
-            if result.returncode != 0:
-                logger.error(f"Docker start failed: {result.stderr}")
-                return False
+            if "Up" not in result.stdout:
+                logger.info(f"Starting qdrant: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "qdrant"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start qdrant failed: {result.stderr}")
+                    return False
+                logger.info("Qdrant started")
+            else:
+                logger.info("Qdrant already running")
 
-            logger.info("Docker services started")
+            # Start mem0 main app (depends on postgres and qdrant)
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_path), "ps", "mem0"],
+                capture_output=True,
+                text=True,
+            )
+            if "Up" not in result.stdout:
+                logger.info(f"Starting mem0: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "mem0"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start mem0 failed: {result.stderr}")
+                    return False
+                logger.info("Mem0 started")
+            else:
+                logger.info("Mem0 already running")
+
+            # Start mem0-dashboard (optional UI)
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_path), "ps", "mem0-dashboard"],
+                capture_output=True,
+                text=True,
+            )
+            if "Up" not in result.stdout:
+                logger.info(f"Starting mem0-dashboard: {self.docker_compose}")
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "mem0-dashboard"],
+                    cwd=str(compose_path.parent),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Docker start mem0-dashboard failed: {result.stderr}")
+                    return False
+                logger.info("Mem0-dashboard started")
+            else:
+                logger.info("Mem0-dashboard already running")
+
+            logger.info("Docker services ready")
             return True
 
         except Exception as e:
             logger.error(f"Failed to start docker services: {e}")
             return False
+
+    async def _wait_for_postgres(self, project_root: Path) -> bool:
+        """Wait for postgres container to be healthy."""
+        compose_path = project_root / self.docker_compose
+        max_retries = 90  # 90 * 2s = 180s
+        for attempt in range(max_retries):
+            try:
+                # Use docker compose ps to check postgres status (works regardless of actual container name)
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "ps", "postgres"],
+                    capture_output=True,
+                    text=True,
+                )
+                # Check if postgres service is "Up" in the output
+                if "Up" in result.stdout or "healthy" in result.stdout.lower():
+                    logger.info("Postgres is healthy")
+                    return True
+                logger.debug(f"Postgres status: {result.stdout.strip()}, attempt {attempt + 1}/{max_retries}")
+            except Exception as e:
+                logger.debug(f"Postgres check attempt {attempt + 1}/{max_retries}: {e}")
+
+            if attempt < max_retries - 1:
+                time.sleep(2)
+
+        logger.error("Postgres did not become healthy in 180s")
+        return False
 
     async def _run_post_start(self, project_root: Path) -> bool:
         """Run post-start script."""
