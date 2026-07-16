@@ -38,3 +38,11 @@ config/systems/graphrag.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# LifeBench systems 文件夹（.env 除外）
+!systems/hindsight/
+!systems/cognee/
+!systems/memu_server/
+!systems/MindMemOS/
+!systems/mem0/
+!systems/EverMemOS_bz/
