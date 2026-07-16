@@ -1,0 +1,43 @@
+# Cognee System Configuration
+
+name: "cognee"
+version: "1.0"
+description: "Cognee - AI memory platform with knowledge graph"
+
+adapter: "cognee"
+
+builder: "cognee"
+
+# Builder configuration (used by builder to start memory system)
+docker_compose: "systems/cognee/docker-compose.yml"
+docker_wait: 180
+
+# Optional services (requires corresponding docker profile)
+enable_neo4j: true   # Enable Neo4j graph database (profile: neo4j)
+enable_redis: true    # Enable Redis caching (profile: redis)
+
+api_key: null
+batch_size: 5
+max_retries: 5
+max_content_length: 8000
+add_interval: 0.5
+num_workers: 10
+post_add_wait_seconds: 180
+max_concurrent: 3
+
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-v4-flash}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  temperature: 0
+  max_tokens: 32768
+
+search:
+  top_k: 40
+  search_interval: 0.05
+  search_type: "CHUNKS"  # CHUNKS=vector similarity with scores, GRAPH_COMPLETION=LLM generation
+
+answer:
+  temperature: 0
+  max_retries: 3

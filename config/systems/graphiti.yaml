@@ -1,0 +1,41 @@
+# Graphiti System Configuration
+
+name: "graphiti"
+version: "1.0"
+description: "Graphiti - Temporal Context Graph"
+
+adapter: "graphiti"
+
+builder: "graphiti"
+
+# Builder configuration (used by builder to start memory system)
+docker_compose: "systems/graphiti/docker-compose.yml"
+docker_wait: 60
+
+# Graphiti API settings
+host: "http://localhost:8000"
+max_retries: 5
+retry_delay: 5.0
+timeout: 300.0
+search_poll_interval: 15.0
+search_max_attempts: 30
+
+# Worker processing settings
+add_process_wait: 5.0
+verify_add: false
+
+# Pipeline settings - process samples serially to avoid overwhelming graphiti queue
+sample_parallel: false
+add:
+  num_workers: 1
+
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-v4-flash}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  temperature: 0
+  max_tokens: 32768
+
+search:
+  top_k: 40

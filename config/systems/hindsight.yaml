@@ -1,0 +1,38 @@
+# Hindsight System Configuration
+
+name: "hindsight"
+version: "1.0"
+description: "Hindsight Agent Memory System"
+
+adapter: "hindsight"
+
+builder: "hindsight"
+
+# Builder configuration (used by builder to start memory system)
+docker_compose: "systems/hindsight/docker/docker-compose/pg_textsearch/docker-compose.yaml"
+docker_wait: 60
+
+# Adapter configuration
+base_url: "http://localhost:8888"
+bank_id: "default"
+budget: "mid"  # candidates sent to rerank: low=~100, mid=~300, high=~1000
+max_retries: 5
+max_content_length: 8000
+add_interval: 0.5
+num_workers: 5
+sample_parallel: true  # run samples serially to avoid overwhelming server
+
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-chat}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  temperature: 0
+  max_tokens: 32768
+
+search:
+  top_k: 40
+  search_interval: 0.5  # delay after each search to avoid rate limiting
+
+answer:
+  max_retries: 3
