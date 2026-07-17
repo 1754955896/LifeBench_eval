@@ -26,9 +26,20 @@ env/
 output/
 results/
 
+
 # Project subdirectories
-/systems/
 tests/
+
+# Ignore all systems subdirectories except the allowed ones
+systems/*/
+
+# LifeBench systems - explicitly keep these
+!systems/hindsight/
+!systems/cognee/
+!systems/memU-server/
+!systems/MindMemOS/
+!systems/mem0/
+!systems/EverMemOS_bz/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml
@@ -39,10 +50,4 @@ config/systems/graphrag.yaml
 .DS_Store
 Thumbs.db
 
-# LifeBench systems 文件夹（.env 除外）
-!systems/hindsight/
-!systems/cognee/
-!systems/memu_server/
-!systems/MindMemOS/
-!systems/mem0/
-!systems/EverMemOS_bz/
+systems/*/.env
