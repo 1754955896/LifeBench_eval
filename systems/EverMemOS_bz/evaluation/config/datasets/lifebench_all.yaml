@@ -1,0 +1,28 @@
+# LifeBench All Dataset Configuration
+
+name: "lifebench_all"
+version: "1.0"
+description: "LifeBench benchmark with full 3380 QA across all conversation scenarios"
+
+# Data configuration
+data:
+  path: "lifebench_all/lifebench_locomo_conversation_format_v2.0_3380QA.json"  # Relative to evaluation/data/
+  format: "locomo"  # Uses LoCoMo-compatible format, no conversion needed
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"  # llm_judge | exact_match
+
+  # LLM Judge settings
+  llm:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+
+  num_runs: 3  # Number of judging runs per question
+
+  # Filter settings
+  # LifeBench categories are complex multi-level lists like [0, 1, 6], [0, 3, 7, 8], etc.
+  # No filter by default - evaluate all categories
+  filter_category: []
