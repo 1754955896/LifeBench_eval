@@ -51,3 +51,5 @@ config/systems/graphrag.yaml
 Thumbs.db
 
 systems/*/.env
+systems/*/*.log
+systems/*/api*.log

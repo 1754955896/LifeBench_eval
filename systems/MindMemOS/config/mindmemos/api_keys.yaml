@@ -1,0 +1,158 @@
+api_keys:
+  # Default dev keys
+  - key_id: key_dev_0001
+    api_key: dev-api-key-001
+    project_id: proj-dev-vanilla-memory
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_dev_0002
+    api_key: dev-api-key-002
+    project_id: proj-dev-schema-memory
+    memory_algorithm: schema
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  # LifeBench_eval samples - each sample gets its own project_id for isolation
+  # smoke dataset samples
+  - key_id: key_smoke_001
+    api_key: smoke-001-api-key
+    project_id: proj-smoke-001
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_smoke_002
+    api_key: smoke-002-api-key
+    project_id: proj-smoke-002
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  # locomo_3people dataset samples
+  - key_id: key_locomo_001
+    api_key: locomo-001-api-key
+    project_id: proj-locomo-001
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_locomo_002
+    api_key: locomo-002-api-key
+    project_id: proj-locomo-002
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_locomo_003
+    api_key: locomo-003-api-key
+    project_id: proj-locomo-003
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  # locomo_format dataset samples (full LifeBench 10 samples)
+  - key_id: key_lifebench_001
+    api_key: lifebench-001-api-key
+    project_id: proj-lifebench-001
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_002
+    api_key: lifebench-002-api-key
+    project_id: proj-lifebench-002
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_003
+    api_key: lifebench-003-api-key
+    project_id: proj-lifebench-003
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_004
+    api_key: lifebench-004-api-key
+    project_id: proj-lifebench-004
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_005
+    api_key: lifebench-005-api-key
+    project_id: proj-lifebench-005
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_006
+    api_key: lifebench-006-api-key
+    project_id: proj-lifebench-006
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_007
+    api_key: lifebench-007-api-key
+    project_id: proj-lifebench-007
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_008
+    api_key: lifebench-008-api-key
+    project_id: proj-lifebench-008
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_009
+    api_key: lifebench-009-api-key
+    project_id: proj-lifebench-009
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
+
+  - key_id: key_lifebench_010
+    api_key: lifebench-010-api-key
+    project_id: proj-lifebench-010
+    memory_algorithm: vanilla
+    enabled: true
+    scopes:
+      - memory:read
+      - memory:write
