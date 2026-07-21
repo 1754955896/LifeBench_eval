@@ -57,6 +57,18 @@ cp systems/MindMemOS/config/mindmemos/dev.yaml.example systems/MindMemOS/config/
 # 编辑 dev.yaml 填入 API Key 等配置
 ```
 
+**手动启动（如 builder 启动失败，可手动启动服务）：**
+
+启动 Docker 服务（Qdrant、Neo4j、Kafka）：
+```bash
+docker compose --env-file systems/MindMemOS/.env -f systems/MindMemOS/dockers/docker-compose.memory.yml up -d --wait qdrant neo4j kafka kafka-ui kafka-exporter
+```
+
+启动 API Server：
+```bash
+cd systems/MindMemOS ; .venv/Scripts/python.exe -m uvicorn mindmemos.api.app:app --host 127.0.0.1 --port 8000
+```
+
 ### Hindsight
 
 配置文件：`systems/hindsight/.env`

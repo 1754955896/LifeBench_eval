@@ -84,16 +84,6 @@ numbers, dates, places, teams, programming languages, image captions, and meal n
 """
 
 
-def _extract_answer(full_response: str) -> str:
-    """Extract the answer from model output (same as LoCoMo)."""
-    answer = full_response
-    if "<answer>" in answer:
-        answer = answer.split("<answer>")[1]
-    if "</answer>" in answer:
-        answer = answer.split("</answer>")[0]
-    return answer.strip()
-
-
 def _parse_locomo_datetime(date_str: str) -> Optional[datetime]:
     """Parse LoCoMo datetime string to datetime object.
 
@@ -244,6 +234,44 @@ def build_answer_context(memories: list[str], question: str = "") -> str:
     return "\n".join(lines)
 
 
+def build_answer_prompt(memories: list[str], question: str, template: str | None = None) -> str:
+    """Build the LoCoMo answer prompt with grounding rules for flat memories (verbatim port from env.py)."""
+    context = build_answer_context(memories, question=question)
+    selected_template = template or LOCOMO_ANSWER_PROMPT_EN
+    prompt = (
+        selected_template.replace("{grounding_rules}", LOCOMO_ANSWER_GROUNDING_RULES)
+        .replace("{context}", context)
+        .replace("{conversation_memories}", context)
+        .replace("{question}", question)
+    )
+    if "{grounding_rules}" not in selected_template and "# CRITICAL REQUIREMENTS" in selected_template:
+        prompt = prompt.replace("# CRITICAL REQUIREMENTS", LOCOMO_ANSWER_GROUNDING_RULES + "\n# CRITICAL REQUIREMENTS")
+    return prompt
+
+
+def _format_memory_for_answering(hit: "MemorySearchHit") -> str:
+    """Format one memory hit for answer generation (verbatim port from env.py)."""
+    event_time = hit.event_time
+    source_timestamp = hit.source_timestamp
+    if not event_time and not source_timestamp:
+        return hit.memory
+    return (
+        f"[event_time: {event_time or 'unknown time'}; "
+        f"source_timestamp: {source_timestamp or 'unknown time'}] {hit.memory}"
+    )
+
+
+def _extract_answer(full_response: str) -> tuple[str, str]:
+    """Extract the answer and chain-of-thought from model output (verbatim port from env.py)."""
+    answer = full_response
+    if "<answer>" in answer:
+        answer = answer.split("<answer>")[1]
+    if "</answer>" in answer:
+        answer = answer.split("</answer>")[0]
+    chain_of_thought = full_response.split("<answer>")[0].strip() if "<answer>" in full_response else ""
+    return answer.strip(), chain_of_thought
+
+
 # Try to import mindmemos_sdk, fall back to httpx if not available
 try:
     from mindmemos_sdk.memory import AsyncMemoryClient, MemorySearchHit
@@ -342,17 +370,16 @@ class MindMemOSAdapter(BaseAdapter):
             messages = []
             # Use session-level timestamp for all messages (same as LoCoMo)
             # Pipeline passes timestamp in seconds, MindMemOS expects milliseconds
-            # Use session_time_str for accurate timestamp (same as LoCoMo)
             session_timestamp_ms = None
-            if chunk.session_time_str:
-                # Parse LoCoMo datetime string like "1:56 pm on 8 May, 2023"
-                session_timestamp_ms = _session_timestamp_millis(chunk.session_time_str)
-            elif chunk.timestamp:
-                # Fallback to chunk.timestamp (seconds, convert to ms)
+            if chunk.timestamp:
+                # Prefer chunk.timestamp (Unix seconds, unambiguous)
                 if isinstance(chunk.timestamp, datetime):
                     session_timestamp_ms = int(chunk.timestamp.timestamp() * 1000)
                 else:
                     session_timestamp_ms = int(chunk.timestamp * 1000)
+            elif chunk.session_time_str:
+                # Fallback to session_time_str (LoCoMo datetime string like "1:56 pm on 8 May, 2023")
+                session_timestamp_ms = _session_timestamp_millis(chunk.session_time_str)
 
             for msg in chunk.messages:
                 # Use speaker_name as role, default to "user"
@@ -447,6 +474,7 @@ class MindMemOSAdapter(BaseAdapter):
                             "memory_type": getattr(hit, "memory_type", "fact"),
                             "event_time": getattr(hit, "event_time", None),
                             "source_timestamp": getattr(hit, "source_timestamp", None),
+                            "raw": hit,
                         },
                     )
                 )
@@ -495,7 +523,8 @@ class MindMemOSAdapter(BaseAdapter):
     ) -> str:
         """
         Generate answer using LLM given query and retrieved context.
-        Uses LoCoMo-style grounding rules and prompt format.
+        Uses env.py's _format_memory_for_answering and build_answer_prompt
+        with raw MemorySearchHit objects for exact LoCoMo behavior.
         """
         if not HAS_LITELLM:
             logger.warning("litellm not available, returning context as answer")
@@ -505,34 +534,22 @@ class MindMemOSAdapter(BaseAdapter):
             logger.error("No LLM API key configured for answer generation")
             return "Error: No LLM API key configured"
 
-        # Get search_result for raw memories with metadata
         search_result = kwargs.get("search_result")
 
-        # Build memories list with proper formatting (same as LoCoMo)
+        # Use raw MemorySearchHit with _format_memory_for_answering (exact env.py behavior)
         if search_result and hasattr(search_result, 'results'):
-            def _format_mem(r):
-                event_time = r.metadata.get("event_time") if r.metadata else None
-                source_timestamp = r.metadata.get("source_timestamp") if r.metadata else None
-                if not event_time and not source_timestamp:
-                    return r.content
-                return (
-                    f"[event_time: {event_time or 'unknown time'}; "
-                    f"source_timestamp: {source_timestamp or 'unknown time'}] {r.content}"
-                )
-            memories_text = build_answer_context(
-                [_format_mem(r) for r in search_result.results],
-                question=query
-            )
+            raw_hits = [r.metadata.get("raw") for r in search_result.results]
+            raw_hits = [h for h in raw_hits if h is not None]
+            formatted_memories = [_format_memory_for_answering(hit) for hit in raw_hits]
+            answer_template = self.config.get("answer_template", None)
+            prompt = build_answer_prompt(formatted_memories, query, answer_template)
         else:
-            # Fallback to pre-formatted context
             memories_text = context
-
-        # Build prompt using LoCoMo format
-        prompt = LOCOMO_ANSWER_PROMPT_EN.format(
-            grounding_rules=LOCOMO_ANSWER_GROUNDING_RULES,
-            context=memories_text,
-            question=query,
-        )
+            prompt = LOCOMO_ANSWER_PROMPT_EN.format(
+                grounding_rules=LOCOMO_ANSWER_GROUNDING_RULES,
+                context=memories_text,
+                question=query,
+            )
 
         try:
             response = await litellm.acompletion(
@@ -544,7 +561,7 @@ class MindMemOSAdapter(BaseAdapter):
                 max_tokens=self.llm_max_tokens,
             )
             full_response = response["choices"][0]["message"]["content"]
-            answer_text = _extract_answer(full_response)
+            answer_text, _ = _extract_answer(full_response)
             return answer_text if answer_text else full_response
         except Exception as e:
             logger.error(f"LLM answer error: {e}")
