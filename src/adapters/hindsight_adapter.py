@@ -1,10 +1,13 @@
 """
 Hindsight Adapter for LifeBench_eval.
 
-Uses hindsight_client library to connect to Hindsight server (docker).
+Uses MemoryEngine directly for local operation without Docker dependency.
 """
 import asyncio
 import logging
+import os
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.adapters.base import BaseAdapter, ChunkedMessage
@@ -14,13 +17,44 @@ from src.models.search import SearchResult, RetrievedMemory
 logger = logging.getLogger(__name__)
 
 
+def _resolve_env_var(value: str) -> str:
+    """Resolve ${VAR:default} style environment variable references at runtime.
+
+    Args:
+        value: String that may contain ${VAR} or ${VAR:default}
+
+    Returns:
+        Resolved string with env vars expanded
+    """
+    if not isinstance(value, str):
+        return value
+
+    pattern = r'\$\{([^}:]+)(?::([^}]*))?\}'
+
+    def replacer(match):
+        var_name = match.group(1)
+        default = match.group(2) or ""
+        return os.environ.get(var_name, default)
+
+    return re.sub(pattern, replacer, value)
+
+
 @register_adapter("hindsight")
 class HindsightAdapter(BaseAdapter):
-    """Hindsight adapter using hindsight_client library.
+    """Hindsight adapter using MemoryEngine directly.
 
     Configuration:
-        base_url: Server URL (default http://localhost:8888)
         bank_id: Bank ID prefix (default "default")
+        budget: Thinking budget - low/mid/high (default "mid")
+        db_url: Database URL (default "pg0" for embedded)
+        memory_llm_provider: LLM provider for memory (default from env)
+        memory_llm_api_key: LLM API key for memory (default from env)
+        memory_llm_model: LLM model for memory (default from env)
+        memory_llm_base_url: LLM base URL for memory (default from env)
+        answer_llm_provider: LLM provider for answer generation
+        answer_llm_api_key: LLM API key for answer generation
+        answer_llm_model: LLM model for answer generation
+        answer_llm_base_url: LLM base URL for answer generation
         max_retries: Maximum retry attempts (default 5)
         retry_delay: Base delay in seconds between retries (default 2.0)
     """
@@ -30,38 +64,159 @@ class HindsightAdapter(BaseAdapter):
         self.output_dir = output_dir
         self.stats_collector = stats_collector
 
-        self.base_url = config.get("base_url", "http://localhost:8888")
+        # Bank configuration
         self.bank_id = config.get("bank_id", "default")
+        self.budget_str = config.get("budget", "mid")
+
+        # Database configuration
+        self.db_url = config.get("db_url", os.getenv("HINDSIGHT_API_DATABASE_URL", "pg0"))
+
+        # Memory LLM configuration (for fact extraction/consolidation)
+        self.memory_llm_provider = config.get(
+            "memory_llm_provider", os.getenv("HINDSIGHT_API_LLM_PROVIDER", "groq")
+        )
+        self.memory_llm_api_key = config.get(
+            "memory_llm_api_key", os.getenv("HINDSIGHT_API_LLM_API_KEY", "")
+        )
+        self.memory_llm_model = config.get(
+            "memory_llm_model", os.getenv("HINDSIGHT_API_LLM_MODEL", "openai/gpt-oss-120b")
+        )
+        self.memory_llm_base_url = config.get(
+            "memory_llm_base_url", os.getenv("HINDSIGHT_API_LLM_BASE_URL") or None
+        )
+
+        # Answer LLM configuration (falls back to memory LLM config)
+        self.answer_llm_provider = config.get(
+            "answer_llm_provider",
+            config.get("llm", {}).get("provider", os.getenv("HINDSIGHT_API_ANSWER_LLM_PROVIDER", self.memory_llm_provider))
+        )
+        self.answer_llm_api_key = config.get(
+            "answer_llm_api_key",
+            config.get("llm", {}).get("api_key", os.getenv("HINDSIGHT_API_ANSWER_LLM_API_KEY", self.memory_llm_api_key))
+        )
+        self.answer_llm_model = config.get(
+            "answer_llm_model",
+            config.get("llm", {}).get("model", os.getenv("HINDSIGHT_API_ANSWER_LLM_MODEL", "gpt-4o-mini"))
+        )
+        self.answer_llm_base_url = config.get(
+            "answer_llm_base_url",
+            config.get("llm", {}).get("base_url", os.getenv("HINDSIGHT_API_ANSWER_LLM_BASE_URL", self.memory_llm_base_url) or "")
+        )
+        self.answer_llm_temperature = config.get("llm", {}).get("temperature", 0)
+        self.answer_llm_max_tokens = config.get("llm", {}).get("max_tokens", 32768)
+
+        # Retry configuration
         self.max_retries = config.get("max_retries", 5)
         self.retry_delay = config.get("retry_delay", 2.0)
-        self.budget = config.get("budget", "mid")  # mid=~100 candidates vs high=300
 
-        self._client = None
+        # Initialize MemoryEngine lazily
+        self._memory: Optional[Any] = None
+        self._llm_config: Optional[Any] = None
 
     def _get_bank_id(self, conversation_id: str) -> str:
         """Get bank_id for a conversation."""
         return f"{self.bank_id}_{conversation_id}"
 
-    async def _get_client(self):
-        """Get or create Hindsight client."""
-        if self._client is None:
-            from hindsight_client import Hindsight
-            self._client = Hindsight(base_url=self.base_url)
-        return self._client
+    async def _get_memory(self):
+        """Get or create MemoryEngine instance."""
+        if self._memory is None:
+            from hindsight_api import MemoryEngine
+            from hindsight_api.config import get_config
+
+            # Configure logging
+            get_config().configure_logging()
+
+            # Resolve environment variables at runtime (in case builder set them after __init__)
+            memory_llm_api_key = _resolve_env_var(self.memory_llm_api_key) or os.environ.get("LLM_API_KEY", "")
+            memory_llm_base_url = _resolve_env_var(self.memory_llm_base_url) if self.memory_llm_base_url else None
+            memory_llm_model = _resolve_env_var(self.memory_llm_model) or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+            memory_llm_provider = _resolve_env_var(self.memory_llm_provider) or os.environ.get("LLM_PROVIDER", "openai")
+
+            self._memory = MemoryEngine(
+                db_url=self.db_url,
+                memory_llm_provider=memory_llm_provider,
+                memory_llm_api_key=memory_llm_api_key,
+                memory_llm_model=memory_llm_model,
+                memory_llm_base_url=memory_llm_base_url,
+            )
+            await self._memory.initialize()
+            logger.info("MemoryEngine initialized successfully")
+        return self._memory
+
+    async def _get_llm_config(self):
+        """Get or create LLMConfig for answer generation."""
+        if self._llm_config is None:
+            from hindsight_api.engine.llm_wrapper import LLMConfig
+
+            # Resolve environment variables at runtime with fallbacks
+            answer_llm_api_key = _resolve_env_var(self.answer_llm_api_key) or os.environ.get("LLM_API_KEY", "")
+            answer_llm_base_url = _resolve_env_var(self.answer_llm_base_url) if self.answer_llm_base_url else os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
+            answer_llm_model = _resolve_env_var(self.answer_llm_model) or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+            answer_llm_provider = _resolve_env_var(self.answer_llm_provider) or os.environ.get("LLM_PROVIDER", "openai")
+
+            self._llm_config = LLMConfig(
+                provider=answer_llm_provider,
+                api_key=answer_llm_api_key,
+                base_url=answer_llm_base_url,
+                model=answer_llm_model,
+                reasoning_effort="high",
+            )
+        return self._llm_config
+
+    def _map_budget(self, budget_str: str):
+        """Map budget string to Budget enum."""
+        from hindsight_api.engine.memory_engine import Budget
+
+        budget_map = {
+            "low": Budget.LOW,    # ~100 candidates
+            "mid": Budget.MID,    # ~300 candidates
+            "high": Budget.HIGH,  # ~1000 candidates
+        }
+        return budget_map.get(budget_str.lower(), Budget.MID)
+
+    def _format_session_content(self, chunk: ChunkedMessage) -> str:
+        """Format ChunkedMessage messages into session content string."""
+        lines = []
+        for msg in chunk.messages:
+            lines.append(f"{msg.speaker_name}: {msg.content}")
+        return "\n".join(lines)
+
+    def _parse_session_time(self, chunk: ChunkedMessage) -> Optional[datetime]:
+        """Parse session time from chunk timestamp or session_time_str."""
+        if chunk.timestamp is not None:
+            return datetime.fromtimestamp(chunk.timestamp, tz=timezone.utc)
+
+        if chunk.session_time_str:
+            # Try parsing common formats
+            formats = [
+                "%I:%M %p on %d %B, %Y",  # "1:56 pm on 8 May, 2023"
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+            ]
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(chunk.session_time_str, fmt)
+                    return dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+
+        return None
 
     async def close(self) -> None:
         """Cleanup resources."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        if self._memory is not None:
+            # MemoryEngine doesn't have a close method, just set to None
+            self._memory = None
+            logger.info("MemoryEngine closed")
+        self._llm_config = None
 
     async def add_chunks(
         self, chunks: List[ChunkedMessage], **kwargs
     ) -> Dict[str, Any]:
-        """Ingest message chunks via Hindsight API.
+        """Ingest message chunks via MemoryEngine batch ingestion.
 
-        Merges all chunks per conversation_id into a single content string
-        so the server can batch-process them efficiently.
+        Groups all chunks per conversation_id into a single session for
+        efficient batch processing.
 
         Args:
             chunks: List of ChunkedMessage objects
@@ -70,31 +225,57 @@ class HindsightAdapter(BaseAdapter):
         Returns:
             Dict with ingestion stats
         """
+        from hindsight_api.models import RequestContext
+
         total_added = 0
         total_failed = 0
 
-        client = await self._get_client()
+        memory = await self._get_memory()
 
-        # Group all chunks by conversation_id
-        conv_contents: Dict[str, List[str]] = {}
+        # Group chunks by conversation_id
+        conv_sessions: Dict[str, List[Dict[str, Any]]] = {}
         for chunk in chunks:
             if not chunk.messages:
                 continue
-            content = "\n".join(f"{msg.speaker_name}: {msg.content}" for msg in chunk.messages)
-            if content.strip():
-                conv_contents.setdefault(chunk.conversation_id, []).append(content)
 
-        # One aretain call per conversation (all messages merged)
-        for conversation_id, content_list in conv_contents.items():
-            merged_content = "\n---\n".join(content_list)
+            content = self._format_session_content(chunk)
+            if not content.strip():
+                continue
+
+            session = {
+                "content": content,
+                "context": f"Conversation session {chunk.session_id or chunk.conversation_id}",
+                "event_date": self._parse_session_time(chunk),
+            }
+
+            conv_sessions.setdefault(chunk.conversation_id, []).append(session)
+
+        # Ingest each conversation's sessions via retain_batch_async
+        for conversation_id, sessions in conv_sessions.items():
             bank_id = self._get_bank_id(conversation_id)
 
-            try:
-                await client.aretain(bank_id=bank_id, content=merged_content)
-                total_added += 1
-            except Exception as e:
-                logger.warning(f"ADD attempt failed (bank_id={bank_id}): {e}")
-                total_failed += 1
+            for attempt in range(self.max_retries):
+                try:
+                    await memory.retain_batch_async(
+                        bank_id=bank_id,
+                        contents=sessions,
+                        request_context=RequestContext(),
+                    )
+                    total_added += 1
+                    break
+                except Exception as e:
+                    logger.warning(
+                        "RETAIN attempt %d/%d failed (bank_id=%s): %s",
+                        attempt + 1, self.max_retries, bank_id, str(e)[:200]
+                    )
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(self.retry_delay * (attempt + 1))
+                    else:
+                        logger.error(
+                            "RETAIN failed after %d attempts for bank_id=%s",
+                            self.max_retries, bank_id
+                        )
+                        total_failed += 1
 
         return {
             "type": "hindsight",
@@ -106,33 +287,45 @@ class HindsightAdapter(BaseAdapter):
     async def search(
         self, query: str, conversation_id: str, index: Any = None, **kwargs
     ) -> SearchResult:
-        """Search memories via Hindsight API.
+        """Search memories via MemoryEngine recall.
 
         Args:
             query: Query text
             conversation_id: Conversation ID (used to derive bank_id)
             index: Optional index object (not used)
-            **kwargs: Extra parameters (e.g., top_k)
+            **kwargs: Extra parameters (e.g., top_k, question_date)
 
         Returns:
             SearchResult with retrieved memories
         """
+        from hindsight_api.models import RequestContext
+
         top_k = kwargs.get("top_k", 200)
         question_id = kwargs.get("question_id", "")
+        question_date = kwargs.get("question_date")
+        max_tokens = kwargs.get("max_tokens", 4096)
 
         bank_id = self._get_bank_id(conversation_id)
-        client = await self._get_client()
+        memory = await self._get_memory()
+        budget = self._map_budget(self.budget_str)
 
         for attempt in range(self.max_retries):
             try:
-                recall_result = await client.arecall(
+                recall_result = await memory.recall_async(
                     bank_id=bank_id,
                     query=query,
-                    budget=self.budget,
+                    budget=budget,
+                    max_tokens=max_tokens,
+                    question_date=question_date,
+                    include_entities=True,
+                    max_entity_tokens=2048,
+                    include_chunks=True,
+                    request_context=RequestContext(),
                 )
+
+                # Convert RecallResult to SearchResult
                 results = recall_result.results or []
 
-                # Convert to RetrievedMemory
                 normalized = []
                 for r in results:
                     entry = RetrievedMemory(
@@ -145,10 +338,8 @@ class HindsightAdapter(BaseAdapter):
                     )
                     normalized.append(entry)
 
-                # Sort by score descending
+                # Sort by score descending and limit to top_k
                 normalized.sort(key=lambda x: x.score, reverse=True)
-
-                # Limit to top_k
                 normalized = normalized[:top_k]
 
                 return SearchResult(
@@ -160,6 +351,7 @@ class HindsightAdapter(BaseAdapter):
                         "adapter": "hindsight",
                         "bank_id": bank_id,
                         "total_results": len(normalized),
+                        "budget": self.budget_str,
                     }
                 )
 
@@ -183,15 +375,6 @@ class HindsightAdapter(BaseAdapter):
                         retrieval_metadata={"adapter": "hindsight", "error": str(e)},
                     )
 
-    def get_system_info(self) -> Dict[str, Any]:
-        """Return system info."""
-        return {
-            "name": "Hindsight",
-            "type": "online_api",
-            "description": "Hindsight Agent Memory System",
-            "adapter": "HindsightAdapter",
-        }
-
     async def answer(
         self, query: str, context: str, conversation_id: str, **kwargs
     ) -> str:
@@ -206,21 +389,20 @@ class HindsightAdapter(BaseAdapter):
         Returns:
             Generated answer string
         """
-        import aiohttp
+        import pydantic
 
-        llm_config = self.config.get("llm", {})
-        provider = llm_config.get("provider", "openai")
-        model = llm_config.get("model", "deepseek-chat")
-        api_key = llm_config.get("api_key", "")
-        base_url = llm_config.get("base_url", "https://api.deepseek.com")
-        temperature = llm_config.get("temperature", 0)
-        max_tokens = llm_config.get("max_tokens", 32768)
+        class QuestionAnswer(pydantic.BaseModel):
+            """Answer format for questions."""
+            answer: str
+            reasoning: str
 
-        if not api_key:
+        llm_config = await self._get_llm_config()
+
+        if not llm_config.api_key:
             logger.error("No LLM API key configured for answer generation")
             return "Error: No LLM API key configured"
 
-        # Prompt from Hindsight LoComo benchmark
+        # Prompt from LoComo benchmark
         prompt = f"""You are a helpful expert assistant answering questions from lme_experiment users based on the provided context.
 
 # CONTEXT:
@@ -242,40 +424,45 @@ Context:
 Question: {query}
 Answer:"""
 
-        url = f"{base_url}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a helpful expert assistant answering questions based on the provided context."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
         for attempt in range(self.max_retries):
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json=payload, headers=headers) as resp:
-                        if resp.status >= 500:
-                            raise aiohttp.ClientResponseError(
-                                resp.request_info, resp.history, status=resp.status
-                            )
-                        resp.raise_for_status()
-                        data = await resp.json()
-
-                if isinstance(data, dict) and "choices" in data:
-                    return data["choices"][0]["message"]["content"]
-                return str(data)
+                answer_obj = await llm_config.call(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a helpful expert assistant answering questions based on the provided context.",
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        },
+                    ],
+                    response_format=QuestionAnswer,
+                    scope="memory",
+                )
+                return answer_obj.answer
             except Exception as exc:
-                logger.warning("Answer attempt %d/%d failed: %s", attempt + 1, self.max_retries, str(exc)[:200])
+                logger.warning(
+                    "Answer attempt %d/%d failed: %s",
+                    attempt + 1, self.max_retries, str(exc)[:200]
+                )
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
                 else:
-                    logger.error("Answer generation failed after %d attempts", self.max_retries)
+                    logger.error(
+                        "Answer generation failed after %d attempts",
+                        self.max_retries
+                    )
                     return f"Error generating answer: {str(exc)[:100]}"
         return "Error generating answer"
+
+    def get_system_info(self) -> Dict[str, Any]:
+        """Return system info."""
+        return {
+            "name": "Hindsight",
+            "type": "memory_engine",
+            "description": "Hindsight Agent Memory System (direct MemoryEngine)",
+            "adapter": "HindsightAdapter",
+            "db_url": self.db_url,
+            "budget": self.budget_str,
+        }

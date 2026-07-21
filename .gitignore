@@ -43,7 +43,6 @@ systems/*/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml
-config/systems/memos_cloud.yaml
 config/systems/zep_cloud.yaml
 config/systems/graphrag.yaml
 # OS

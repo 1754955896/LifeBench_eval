@@ -52,6 +52,17 @@ def get_embed_client() -> EmbedClient:
     """Create an embedding client from the currently bound config context."""
     cfg = get_config()
     router_cfg = cfg.embed_model_router
+
+    # Check if we should use SiliconFlow direct provider
+    for ep in router_cfg.endpoints:
+        api_base = str(ep.api_base or "")
+        if "siliconflow" in api_base:
+            from .siliconflow import SiliconFlowEmbeddingProvider
+
+            provider = SiliconFlowEmbeddingProvider(ep)
+            return EmbedClient(siliconflow_provider=provider)
+
+    # Fall back to litellm router
     router, _ = get_router(router_cfg, EmbedClient.ALIAS)
     default_model = EmbedClient.ALIAS if router_cfg.endpoints else None
     return EmbedClient(router, default_model=default_model)
@@ -78,7 +89,14 @@ async def validate_embedding_dimension() -> None:
 
     vector_size = cfg.database.qdrant.vector_size
     for ep in cfg.embed_model_router.endpoints:
-        if ep.dimensions is not None and ep.dimensions != vector_size:
+        if ep.dimensions is None:
+            continue
+        api_base = str(ep.api_base or "")
+        # SiliconFlow uses dimensions param with 4x ratio (dimensions=256 -> output 1024)
+        # so validation is handled by the direct SiliconFlow provider
+        if "siliconflow" in api_base:
+            continue
+        if ep.dimensions != vector_size:
             raise InvalidConfigError(
                 field=f"embed_model_router.endpoints[model={ep.model}].dimensions",
                 support=f"equal to database.qdrant.vector_size={vector_size}",
@@ -99,8 +117,20 @@ def get_rerank_client() -> RerankClient:
     rerank_cfg = cfg.algo_config.search.rerank
     router_cfg = cfg.rerank_model_router
     router = None
-    if rerank_cfg.enabled and router_cfg.endpoints:
+    siliconflow_provider = None
+
+    # Check if we should use SiliconFlow direct provider
+    for ep in router_cfg.endpoints:
+        api_base = str(ep.api_base or "")
+        if "siliconflow" in api_base:
+            from .siliconflow_rerank import SiliconFlowRerankProvider
+
+            siliconflow_provider = SiliconFlowRerankProvider(ep)
+            break
+
+    if siliconflow_provider is None and rerank_cfg.enabled and router_cfg.endpoints:
         router, _ = get_router(router_cfg, RerankClient.ALIAS)
+
     return RerankClient(
         router,
         max_query_length=rerank_cfg.max_query_length,
@@ -108,6 +138,7 @@ def get_rerank_client() -> RerankClient:
         max_batch_size=rerank_cfg.max_batch_size,
         max_concurrent_batches=rerank_cfg.max_concurrent_batches,
         request_timeout=rerank_cfg.request_timeout,
+        siliconflow_provider=siliconflow_provider,
     )
 
 

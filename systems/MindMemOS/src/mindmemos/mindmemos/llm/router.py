@@ -17,6 +17,12 @@ litellm.drop_params = True  # Let litellm drop optional params unsupported by a 
 litellm.suppress_debug_info = True
 litellm.set_verbose = False
 litellm.turn_off_message_logging = True
+
+# Register SiliconFlow as OpenAI-compatible provider so litellm routes
+# siliconflow/<model> requests through the OpenAI-compatible embedding path.
+if "siliconflow" not in litellm.openai_compatible_providers:
+    litellm.openai_compatible_providers.append("siliconflow")
+
 for _logger_name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
 
@@ -76,6 +82,17 @@ def build_litellm_params(
     # `allowed_openai_params` so litellm keeps `dimensions` as a top-level param.
     if ep.dimensions is not None and _model_supports_dimensions(ep.model, dimensions_supported_models or []):
         params["allowed_openai_params"] = ["dimensions"]
+
+    # SiliconFlow rejects `dimensions` as a top-level param but accepts it in extra_body.
+    # Detect siliconflow via api_base and move dimensions accordingly.
+    api_base = str(getattr(ep, "api_base", "") or "")
+    if "siliconflow" in api_base and ep.dimensions is not None:
+        eb = dict(params.get("extra_body") or {})
+        eb["dimensions"] = ep.dimensions
+        params["extra_body"] = eb
+        # Remove dimensions from top-level params so it doesn't get sent twice
+        params.pop("dimensions", None)
+        params.pop("allowed_openai_params", None)
 
     return params
 

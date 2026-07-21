@@ -45,7 +45,7 @@ rerank:
   max_concurrent: 5
 
 add:
-  num_workers: 4
+  num_workers: 15
   enable_semantic_extraction: false
   enable_clustering: true
   enable_profile_extraction: false

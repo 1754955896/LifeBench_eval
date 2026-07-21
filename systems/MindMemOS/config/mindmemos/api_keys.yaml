@@ -1,158 +1,108 @@
 api_keys:
-  # Default dev keys
-  - key_id: key_dev_0001
-    api_key: dev-api-key-001
-    project_id: proj-dev-vanilla-memory
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_dev_0002
-    api_key: dev-api-key-002
-    project_id: proj-dev-schema-memory
-    memory_algorithm: schema
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  # LifeBench_eval samples - each sample gets its own project_id for isolation
-  # smoke dataset samples
-  - key_id: key_smoke_001
-    api_key: smoke-001-api-key
-    project_id: proj-smoke-001
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_smoke_002
-    api_key: smoke-002-api-key
-    project_id: proj-smoke-002
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  # locomo_3people dataset samples
-  - key_id: key_locomo_001
-    api_key: locomo-001-api-key
-    project_id: proj-locomo-001
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_locomo_002
-    api_key: locomo-002-api-key
-    project_id: proj-locomo-002
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_locomo_003
-    api_key: locomo-003-api-key
-    project_id: proj-locomo-003
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  # locomo_format dataset samples (full LifeBench 10 samples)
-  - key_id: key_lifebench_001
-    api_key: lifebench-001-api-key
-    project_id: proj-lifebench-001
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_002
-    api_key: lifebench-002-api-key
-    project_id: proj-lifebench-002
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_003
-    api_key: lifebench-003-api-key
-    project_id: proj-lifebench-003
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_004
-    api_key: lifebench-004-api-key
-    project_id: proj-lifebench-004
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_005
-    api_key: lifebench-005-api-key
-    project_id: proj-lifebench-005
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_006
-    api_key: lifebench-006-api-key
-    project_id: proj-lifebench-006
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_007
-    api_key: lifebench-007-api-key
-    project_id: proj-lifebench-007
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_008
-    api_key: lifebench-008-api-key
-    project_id: proj-lifebench-008
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_009
-    api_key: lifebench-009-api-key
-    project_id: proj-lifebench-009
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
-
-  - key_id: key_lifebench_010
-    api_key: lifebench-010-api-key
-    project_id: proj-lifebench-010
-    memory_algorithm: vanilla
-    enabled: true
-    scopes:
-      - memory:read
-      - memory:write
+- key_id: key_locomo_schema_20260719_170536_37d51269
+  api_key: dev-api-key-locomo-schema-20260719-170536-37d51269
+  project_id: proj_locomo_schema_20260719_170536_37d51269
+  memory_algorithm: schema
+- key_id: key_dev_001
+  api_key: dev-api-key-001
+  project_id: proj_dev_001
+  memory_algorithm: vanilla
+  enabled: true
+  scopes:
+  - memory:read
+  - memory:write
+  enabled: true
+  scopes:
+  - memory:read
+  - memory:write
+  project_override_config:
+    algo_config:
+      common:
+        prompt_language: EN
+      add:
+        schema:
+          entity_modeling_path: config/presets/entity_modeling_locomo.json
+          extraction:
+            enable_schema_selection: true
+            use_search_fields: true
+            search_fields_max: 10
+            episode_search_fields_augment: true
+            episode_augment_count: 4
+          merge:
+            enable_entity_merge_decision: true
+            entity_recall_top_k: 15
+            max_merge_retries: 8
+            use_property_merge: false
+            secondary_search_limit: 30
+            secondary_search_retries: 3
+          higher_order:
+            enabled: true
+            top_k: 10
+            min_evidence_count: 2
+          episode_edge:
+            top_k: 10
+          chunker:
+            split_mode: llm
+            min_episode_length: 1
+            max_episode_length: 50
+            max_buffer_size: 1000
+            split_on_user_speaker: true
+            max_minutes_from_first: 30
+          drain:
+            episode_generation_max_retries: 3
+      search:
+        request_top_k_max: 100
+        rerank:
+          enabled: false
+        schema_search:
+          entity:
+            recall_size: 800
+            rrf_k: 80
+            top_k: 40
+            top_n: 16
+            use_reranker: true
+            max_rerank_candidates: 100
+            use_maxsim_rescore: false
+            maxsim_weight: 0.3
+            search_field_overfetch_factor: 3
+          property:
+            recall_size: 45
+            rrf_k: 60
+            top_k: 20
+            top_n: 16
+            alloc_min_factor: 0.5
+            alloc_max_factor: 1.5
+            use_property_extension: true
+            extension_step: 3
+            higher_order_ratio: 0.0
+          dual_path:
+            enabled: true
+            property_recall_size: 300
+            property_rrf_k: 80
+            property_top_k: 80
+            property_top_n: 25
+          entity_weights:
+            force_balanced_split: true
+            episode_weight: 0.7
+            non_episode_weight: 0.3
+          edge:
+            top_k: 50
+            min_relevance_score: 0.1
+          multi_hop: 2
+          use_entity_agent_search: true
+          current_time_mode: unknown
+          min_time_window_days: 30
+          include_edges: false
+          output_max_edge_num: 10
+        agentic:
+          max_rounds: 3
+          top_k_per_round: 40
+          top_n_per_round: 16
+          num_hops: 2
+          use_rerank: true
+          use_relevance_filter: false
+          use_property_filter: false
+          current_time_mode: unknown
+          min_time_window_days: 30
+          include_edges: false
+          output_max_edge_num: 10

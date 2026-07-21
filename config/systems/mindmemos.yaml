@@ -8,7 +8,7 @@ adapter: "mindmemos"
 builder: "mindmemos"
 
 # MindMemOS API configuration
-api_base_url: "${MINDMEMOS_API_BASE_URL:http://127.0.0.1:8001}"
+api_base_url: "${MINDMEMOS_API_BASE_URL:http://127.0.0.1:8000}"
 api_key: "${MINDMEMOS_API_KEY:dev-api-key-001}"
 api_key_002: "${MINDMEMOS_API_KEY_002:dev-api-key-002}"
 
@@ -17,6 +17,7 @@ memory_algorithm: "${MINDMEMOS_MEMORY_ALGORITHM:vanilla}"
 
 # Search configuration
 search_top_k: 40
+search_strategy: "agentic"
 rerank: true
 
 # LLM configuration (for answer generation)
@@ -59,7 +60,7 @@ search:
   mode: "hybrid"
   use_hybrid_search: true
   use_reranker: true
-  num_workers: 2
+  num_workers: 5
   hybrid_emb_candidates: 50
   hybrid_bm25_candidates: 50
   hybrid_rrf_k: 40
@@ -74,5 +75,5 @@ stats:
 
 # MindMemOS system directory (for Docker and API server)
 system_dir: "systems/MindMemOS"
-service_url: "${MINDMEMOS_SERVICE_URL:http://127.0.0.1:8001}"
+service_url: "${MINDMEMOS_SERVICE_URL:http://127.0.0.1:8000}"
 config_name: "${MINDMEMOS_CONFIG_NAME:dev}"

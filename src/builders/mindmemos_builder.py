@@ -34,7 +34,7 @@ class MindMemOSBuilder(BaseBuilder):
         self.api_key = config.get("api_key", "dev-api-key-001")
         self.api_key_002 = config.get("api_key_002", "dev-api-key-002")  # schema memory
         self.docker_compose_file = self.system_dir / "dockers" / "docker-compose.memory.yml"
-        self.service_url = config.get("service_url", "http://127.0.0.1:8001")
+        self.service_url = config.get("service_url", "http://127.0.0.1:8000")
 
     def setup_environment(self) -> None:
         """Set up environment variables for MindMemOS."""
@@ -168,7 +168,7 @@ class MindMemOSBuilder(BaseBuilder):
         is_windows = platform.system() == "Windows"
 
         if is_windows:
-            cmd = f'"{venv_python}" -m uvicorn mindmemos.api.app:app --host 127.0.0.1 --port 8001'
+            cmd = f'"{venv_python}" -m uvicorn mindmemos.api.app:app --host 127.0.0.1 --port 8000'
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.system_dir),
@@ -179,7 +179,7 @@ class MindMemOSBuilder(BaseBuilder):
                 text=True,
             )
         else:
-            cmd = [str(venv_python), "-m", "uvicorn", "mindmemos.api.app:app", "--host", "127.0.0.1", "--port", "8001"]
+            cmd = [str(venv_python), "-m", "uvicorn", "mindmemos.api.app:app", "--host", "127.0.0.1", "--port", "8000"]
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.system_dir),

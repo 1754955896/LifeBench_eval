@@ -1,4 +1,4 @@
-"""Rerank client with litellm Router backend and keyword-similarity fallback."""
+"""Rerank client with litellm Router backend, direct providers, and keyword-similarity fallback."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ..logging import get_logger, traced
 from ..typing import RerankHit, RerankResponse
 from .router import usage_tokens
+from .siliconflow_rerank import SiliconFlowRerankProvider
 
 if TYPE_CHECKING:
     from litellm import Router
@@ -31,12 +32,13 @@ _STOPWORDS = frozenset({
 
 
 class RerankClient:
-    """Rerank client that routes through litellm.Router.
+    """Rerank client that routes through litellm.Router or direct providers.
 
     Fallback chain:
-    1. litellm Router rerank endpoint (if configured)
-    2. Keyword overlap scoring (no external API needed)
-    3. Identity ordering (preserve input order)
+    1. Direct SiliconFlow provider (if configured)
+    2. litellm Router rerank endpoint (if configured)
+    3. Keyword overlap scoring (no external API needed)
+    4. Identity ordering (preserve input order)
     """
 
     ALIAS = "rerank"
@@ -51,10 +53,12 @@ class RerankClient:
         max_concurrent_batches: int = 1,
         request_timeout: float = 5.0,
         use_keyword_fallback: bool = True,
+        siliconflow_provider: SiliconFlowRerankProvider | None = None,
     ) -> None:
         self._use_keyword_fallback = use_keyword_fallback
         self._router = router
-        self._has_model = router is not None
+        self._siliconflow_provider = siliconflow_provider
+        self._has_model = router is not None or siliconflow_provider is not None
         self._default_model = self.ALIAS
         self._max_query_length = max_query_length
         self._max_doc_length = max_doc_length
@@ -86,6 +90,14 @@ class RerankClient:
 
         top_n = min(top_n, len(documents))
 
+        # Use SiliconFlow direct provider if configured
+        if self._siliconflow_provider is not None:
+            try:
+                return await self._rerank_via_siliconflow(query, documents, top_n)
+            except Exception as exc:
+                logger.info("siliconflow_rerank fallback due to error: %s", exc)
+                return await self._fallback_rerank(query, documents, top_n)
+
         if self._has_model and self._router is not None:
             try:
                 return await self._rerank_via_router(query, documents, top_n, **kwargs)
@@ -93,6 +105,34 @@ class RerankClient:
                 return await self._fallback_rerank(query, documents, top_n)
 
         return await self._fallback_rerank(query, documents, top_n)
+
+    async def _rerank_via_siliconflow(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> RerankResponse:
+        """Direct SiliconFlow rerank, bypassing litellm."""
+        start = perf_counter()
+        try:
+            resp = await self._siliconflow_provider.rerank(query, documents, top_n)
+        except Exception as exc:
+            logger.info(
+                "siliconflow_rerank_call",
+                model=self._siliconflow_provider.model,
+                status="error",
+                latency_ms=round((perf_counter() - start) * 1000, 2),
+                error=str(exc),
+            )
+            raise
+
+        logger.info(
+            "siliconflow_rerank_call",
+            model=resp.model,
+            status="ok",
+            latency_ms=round((perf_counter() - start) * 1000, 2),
+        )
+        return resp
 
     async def _fallback_rerank(self, query: str, documents: list[str], top_n: int) -> RerankResponse:
         if self._use_keyword_fallback:

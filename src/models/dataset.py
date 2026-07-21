@@ -20,6 +20,7 @@ class QAPair:
 class Dataset:
     """Standard dataset format."""
     dataset_name: str
-    conversations: List[Any] = field(default_factory=list)  # List[Conversation]
-    qa_pairs: List[QAPair] = field(default_factory=list)
+    conversations: List[Any] = field(default_factory=list)  # Legacy field
+    qa_pairs: List[QAPair] = field(default_factory=list)    # Legacy field
+    samples: List[Any] = field(default_factory=list)        # New structured samples
     metadata: Dict[str, Any] = field(default_factory=dict)

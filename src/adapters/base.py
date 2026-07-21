@@ -20,11 +20,13 @@ class ChunkedMessage:
         conversation_id: ID of the conversation this chunk belongs to
         session_id: Optional session identifier for timestamp association
         timestamp: Optional timestamp for this chunk (unix epoch)
+        session_time_str: Optional original time string for accurate timestamp (e.g., "1:56 pm on 8 May, 2023")
     """
     messages: List["Message"]
     conversation_id: str
     session_id: Optional[str] = None
     timestamp: Optional[int] = None
+    session_time_str: Optional[str] = None
 
 
 class BaseAdapter(ABC):

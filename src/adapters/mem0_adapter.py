@@ -59,6 +59,9 @@ class Mem0Adapter(BaseAdapter):
         self.timeout = config.get("timeout", 300.0)
         self.event_poll_interval = config.get("event_poll_interval", 0.5)
         self.event_poll_timeout = config.get("event_poll_timeout", 300.0)
+        # Set infer=False to store raw text directly without LLM extraction
+        # This is important for historical data import where we want exact memories
+        self.infer = config.get("infer", False)
 
         # Use high limit since we handle rate limiting ourselves
         self.limiter = AsyncLimiter(100000, 60)
@@ -91,8 +94,8 @@ class Mem0Adapter(BaseAdapter):
     ) -> Dict[str, Any]:
         """Ingest message chunks via Mem0 API.
 
-        Merges all messages per conversation_id into a single call so the
-        server can batch-process them efficiently.
+        Each ChunkedMessage (session) is sent as a separate API call,
+        preserving its session-level timestamp.
 
         Args:
             chunks: List of ChunkedMessage objects
@@ -104,10 +107,6 @@ class Mem0Adapter(BaseAdapter):
         total_added = 0
         total_failed = 0
 
-        # Group all messages by conversation_id
-        conv_messages: Dict[str, List[Dict[str, str]]] = {}
-        conv_timestamp: Dict[str, Optional[int]] = {}
-
         for chunk in chunks:
             if not chunk.messages:
                 continue
@@ -115,18 +114,14 @@ class Mem0Adapter(BaseAdapter):
                 {"role": msg.speaker_name, "content": f"{msg.speaker_name}: {msg.content}"}
                 for msg in chunk.messages
             ]
-            if messages:
-                conv_messages.setdefault(chunk.conversation_id, []).extend(messages)
-                # Use the latest timestamp available
-                if chunk.timestamp is not None:
-                    conv_timestamp[chunk.conversation_id] = chunk.timestamp
+            if not messages:
+                continue
 
-        # One add_messages call per conversation (all messages merged)
-        for conversation_id, messages in conv_messages.items():
+            # Each session is sent separately to preserve its timestamp
             success = await self._add_messages(
                 messages,
-                conversation_id,
-                timestamp=conv_timestamp.get(conversation_id),
+                chunk.conversation_id,
+                timestamp=chunk.timestamp,
             )
 
             if success:
@@ -160,7 +155,7 @@ class Mem0Adapter(BaseAdapter):
         """
         session = await self._get_session()
 
-        payload: Dict[str, Any] = {"messages": messages, "user_id": user_id, "infer": True}
+        payload: Dict[str, Any] = {"messages": messages, "user_id": user_id, "infer": self.infer}
         if timestamp is not None:
             payload["timestamp"] = timestamp
 

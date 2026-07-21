@@ -39,6 +39,7 @@ from src.builders.registry import create_builder
 from src.evaluators.registry import create_evaluator
 from src.loaders.registry import load_dataset
 from src.pipeline import Pipeline
+from src.pipeline.runner_multi_thread import PipelineMultiThread
 from src.utils.config import load_yaml, normalize_system_config
 
 
@@ -119,6 +120,11 @@ async def main():
         "--track-cost",
         action="store_true",
         help="Track DeepSeek API cost by querying balance before/after each add",
+    )
+    parser.add_argument(
+        "--multi-thread",
+        action="store_true",
+        help="Use multi-threaded batch processing runner",
     )
 
     args = parser.parse_args()
@@ -229,14 +235,25 @@ async def main():
 
     filter_categories = dataset_config.get("evaluation", {}).get("filter_category", [])
 
-    pipeline = Pipeline(
-        adapter=adapter,
-        evaluator=evaluator,
-        output_dir=output_dir,
-        filter_categories=filter_categories,
-        debug=args.debug,
-        track_cost=args.track_cost,
-    )
+    if args.multi_thread:
+        pipeline = PipelineMultiThread(
+            adapter=adapter,
+            evaluator=evaluator,
+            output_dir=output_dir,
+            filter_categories=filter_categories,
+            debug=args.debug,
+            track_cost=args.track_cost,
+        )
+        print(f"  ✅ Created multi-threaded pipeline")
+    else:
+        pipeline = Pipeline(
+            adapter=adapter,
+            evaluator=evaluator,
+            output_dir=output_dir,
+            filter_categories=filter_categories,
+            debug=args.debug,
+            track_cost=args.track_cost,
+        )
 
     print(f"  ✅ Created pipeline, output: {output_dir}")
 

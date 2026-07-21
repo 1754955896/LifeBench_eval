@@ -104,19 +104,42 @@ class AgenticSearchWrapper:
             allow_time_extraction=False,
         )
         return [
-            MemorySearchItem(
-                id=entity.entity_id,
-                memory=entity.description
-                or entity.format_entity_prompt(
-                    ignore_edge_num=agentic_config.output_max_edge_num,
-                    include_description=False,
-                    include_edges=agentic_config.include_edges,
-                ),
-                memory_type="fact",
-                last_update_at="",
-            )
+            _entity_to_memory_search_item(entity, agentic_config.output_max_edge_num, agentic_config.include_edges)
             for entity in entities
         ]
+
+
+def _entity_to_memory_search_item(
+    entity: TemporalEntity,
+    output_max_edge_num: int,
+    include_edges: bool,
+) -> MemorySearchItem:
+    """Convert a TemporalEntity to MemorySearchItem with event_time and source_timestamp."""
+    # Extract event_time and source_timestamp from entity properties
+    # get_property_at_time returns the value at the latest entry before the given timestamp
+    event_time = entity.get_property_at_time("event_time", "9999-12-31 23:59:59")
+    source_timestamp = entity.get_property_at_time("source_timestamp", "9999-12-31 23:59:59")
+    last_update_at = entity.get_property_at_time("last_update_at", "9999-12-31 23:59:59") or ""
+
+    # Convert to string if they're not None
+    event_time = str(event_time) if event_time is not None else None
+    source_timestamp = str(source_timestamp) if source_timestamp is not None else None
+    last_update_at = str(last_update_at) if last_update_at else ""
+
+    memory_text = entity.description or entity.format_entity_prompt(
+        ignore_edge_num=output_max_edge_num,
+        include_description=False,
+        include_edges=include_edges,
+    )
+
+    return MemorySearchItem(
+        id=entity.entity_id,
+        memory=memory_text,
+        memory_type="fact",
+        last_update_at=last_update_at,
+        event_time=event_time,
+        source_timestamp=source_timestamp,
+    )
 
 
 class EngineSearchTool(SearchTool):
@@ -171,6 +194,13 @@ class EngineSearchTool(SearchTool):
         for item in candidates:
             entity = TemporalEntity(entity_id=item.id, name=item.id, entity_type="memory", description=item.memory)
             entity.modify_property("search_result", item.memory, item.last_update_at or "", uid=item.id)
+            # Transfer time information from the search item to the entity
+            if item.event_time:
+                entity.modify_property("event_time", item.event_time, item.last_update_at or "", uid=item.id)
+            if item.source_timestamp:
+                entity.modify_property("source_timestamp", item.source_timestamp, item.last_update_at or "", uid=item.id)
+            if item.last_update_at:
+                entity.modify_property("last_update_at", item.last_update_at, item.last_update_at or "", uid=item.id)
             entities.append(entity)
         return SearchToolResult(entities=entities, debug={"tool": self.name})
 

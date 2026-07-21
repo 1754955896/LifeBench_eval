@@ -395,7 +395,14 @@ def _validate_embedding_vector_size(cfg: Any) -> None:
     vector_size = cfg.database.qdrant.vector_size
     for index, endpoint in enumerate(cfg.embed_model_router.endpoints):
         dimensions = endpoint.dimensions
-        if dimensions is not None and dimensions != vector_size:
+        if dimensions is None:
+            continue
+        api_base = str(endpoint.api_base or "")
+        # SiliconFlow uses dimensions param with 4x ratio (dimensions=256 -> output 1024)
+        # so validation is handled by the direct SiliconFlow provider
+        if "siliconflow" in api_base:
+            continue
+        if dimensions != vector_size:
             raise InvalidConfigError(
                 f"embed_model_router.endpoints[{index}].dimensions",
                 support=f"must equal database.qdrant.vector_size ({vector_size})",

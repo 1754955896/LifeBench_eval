@@ -7,6 +7,7 @@ import re
 import time
 import warnings
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed as thread_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -95,7 +96,7 @@ class Pipeline:
 
         dataset = self._apply_category_filter(dataset)
 
-        if len(dataset.conversations) == 0:
+        if len(dataset.samples) == 0:
             print("[red] No conversations to process![/red]")
             return {"error": "No conversations selected"}
 
@@ -151,7 +152,7 @@ class Pipeline:
         all_search_results: List[SearchResult] = self._results.get("search_results", [])
 
         # Group sessions and QAs by sample (conversation_id)
-        sample_ids = list({conv.conversation_id for conv in dataset.conversations})
+        sample_ids = list({s.conversation_id for s in dataset.samples})
         print(f"\n👥 {len(sample_ids)} samples to process")
 
         # Collect all sample data
@@ -537,42 +538,64 @@ class Pipeline:
         """Return one ChunkedMessage per session (all messages in that session)."""
         chunks = []
 
+        # Build sessions_by_conv mapping: conv_id -> list of session_ids
         sessions_by_conv: Dict[str, List[str]] = defaultdict(list)
         for sid in session_ids:
             if ":" in sid:
                 conv_id, session_key = sid.split(":", 1)
                 sessions_by_conv[conv_id].append(session_key)
 
-        for conv in dataset.conversations:
-            conv_id = conv.conversation_id
-            raw_conv = conv.metadata.get("_raw_conversation", {})
+        # Build samples lookup
+        samples_by_id = {s.conversation_id: s for s in dataset.samples}
 
-            if conv_id not in sessions_by_conv:
+        for conv_id, session_keys in sessions_by_conv.items():
+            if conv_id not in samples_by_id:
                 continue
 
-            for session_key in sessions_by_conv[conv_id]:
-                session_msgs = raw_conv.get(session_key, [])
+            sample = samples_by_id[conv_id]
+
+            # Build session lookup: session_id -> Session
+            sessions_map = {s.session_id: s for s in sample.sessions}
+
+            for session_key in session_keys:
+                if session_key not in sessions_map:
+                    continue
+
+                session = sessions_map[session_key]
+                session_msgs = session.messages
                 if not isinstance(session_msgs, list):
                     continue
 
                 messages = []
+                # Compute session-level timestamp from session_time_original (full datetime)
+                session_dt = None
+                session_time_original = getattr(session, 'session_time_original', '')
+                if session_time_original:
+                    session_dt = self._parse_session_time(session_time_original)
+                # Fallback to date-only parsing
+                session_date = datetime.strptime(date_str, "%Y-%m-%d")
                 for msg_data in session_msgs:
-                    if isinstance(msg_data, dict):
-                        # 从 dia_id 提取日期时间 (格式: "2025-01-01_fitness_health0")
-                        dia_id = msg_data.get("dia_id", "")
-                        msg_timestamp = None
-                        if dia_id:
-                            date_part = dia_id.split("_")[0] if "_" in dia_id else ""
-                            if date_part and len(date_part) == 10:
-                                msg_timestamp = datetime.strptime(f"{date_part} 23:59:59", "%Y-%m-%d %H:%M:%S")
-                        msg = Message(
-                            speaker_id=msg_data.get("speaker", ""),
-                            speaker_name=msg_data.get("speaker", ""),
-                            content=msg_data.get("text", ""),
-                            timestamp=msg_timestamp,
-                            metadata={"dia_id": dia_id} if dia_id else {},
-                        )
-                        messages.append(msg)
+                    # msg_data is now a Message object with .speaker, .content, .dia_id
+                    dia_id = getattr(msg_data, 'dia_id', '') or ''
+                    msg_timestamp = None
+                    if dia_id:
+                        date_part = dia_id.split("_")[0] if "_" in dia_id else ""
+                        if date_part and len(date_part) == 10:
+                            msg_timestamp = datetime.strptime(f"{date_part} 23:59:59", "%Y-%m-%d %H:%M:%S")
+                    # Fallback to session-level datetime when dia_id has no date
+                    if msg_timestamp is None:
+                        msg_timestamp = session_dt or session_date
+                    msg = Message(
+                        speaker_name=getattr(msg_data, 'speaker_name', '') or '',
+                        content=getattr(msg_data, 'content', '') or '',
+                        timestamp=msg_timestamp,
+                        dia_id=dia_id,
+                        metadata={
+                            "blip_caption": getattr(msg_data, 'blip_caption', '') or '',
+                            "query": getattr(msg_data, 'query', '') or '',
+                        },
+                    )
+                    messages.append(msg)
 
                 if not messages:
                     continue
@@ -583,9 +606,34 @@ class Pipeline:
                     conversation_id=conv_id,
                     session_id=unique_session_id,
                     timestamp=int(datetime.strptime(date_str, "%Y-%m-%d").timestamp()),
+                    session_time_str=getattr(session, 'session_time_original', ''),
                 ))
 
         return chunks
+
+    def _parse_session_time(self, time_str: str) -> Optional[datetime]:
+        """Parse LoCoMo session time string like '1:56 pm on 8 May, 2023' to datetime.
+
+        Falls back to parsing '8 May, 2023' (date only) if full datetime parsing fails.
+        """
+        if not time_str:
+            return None
+
+        # Try full datetime parsing: "1:56 pm on 8 May, 2023"
+        for fmt in ("%I:%M %p on %d %B, %Y", "%I:%M %p on %d %B %Y"):
+            try:
+                return datetime.strptime(time_str.strip(), fmt)
+            except ValueError:
+                continue
+
+        # Fallback: try date-only parsing: "8 May, 2023"
+        for fmt in ("%d %B, %Y", "%d %B %Y"):
+            try:
+                return datetime.strptime(time_str.strip(), fmt)
+            except ValueError:
+                continue
+
+        return None
 
     def _group_chunks_by_session(self, chunks: List[ChunkedMessage]) -> Dict[str, List[ChunkedMessage]]:
         """Group chunks by session_id."""
@@ -599,7 +647,7 @@ class Pipeline:
         qa_pairs: List[Any],
         ordering_info: Dict[str, Any],
     ) -> List[SearchResult]:
-        concurrency = 10  # serial search to avoid overwhelming server
+        concurrency = self.adapter.config.get("search", {}).get("num_workers", 5)  # control concurrency
         semaphore = asyncio.Semaphore(concurrency)
 
         async def search_one(qa):
@@ -625,7 +673,7 @@ class Pipeline:
     ) -> List[AnswerResult]:
         from src.formatters import format_context
 
-        concurrency = self.adapter.config.get("answer", {}).get("num_workers", 10)
+        concurrency = 10
         semaphore = asyncio.Semaphore(concurrency)
 
         async def answer_one(qa, sr):
@@ -658,7 +706,7 @@ class Pipeline:
     ) -> List[AnswerResult]:
         """Run answer with progress bar and incremental save."""
         pbar = tqdm(total=len(qa_pairs), desc="💬 ANSWER", leave=True)
-        concurrency = self.adapter.config.get("answer", {}).get("num_workers", 10)
+        concurrency = 10
         semaphore = asyncio.Semaphore(concurrency)
 
         all_results: List[AnswerResult] = []
@@ -709,26 +757,41 @@ class Pipeline:
 
     def _extract_date_info(self, dataset: Dataset) -> tuple:
         DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
-        SESSION_DATE_PATTERN = re.compile(r"session_(\d+)_date_time")
 
         def parse_date(date_str: str) -> datetime:
+            """Parse date string to datetime with second precision.
+
+            Supports:
+            - ISO format: "2023-05-08" → 2023-05-08 22:00:00
+            - LoCoMo natural language: "1:56 pm on 8 May, 2023" → 2023-05-08 13:56:00
+            - LoCoMo natural language: "1:56 pm on 8 May 2023" → 2023-05-08 13:56:00
+
+            If no time is provided, defaults to 22:00:00.
+            """
             if not isinstance(date_str, str) or not date_str.strip():
                 return datetime.max
-            # Try ISO format first: 2023-05-08
+
+            date_str = date_str.strip()
+
+            # Try ISO format: 2023-05-08
             try:
-                return datetime.strptime(date_str.strip(), "%Y-%m-%d")
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                return dt.replace(hour=22, minute=0, second=0)
             except ValueError:
                 pass
-            # Try locomo natural language: "1:56 pm on 8 May, 2023"
+
+            # Try LoCoMo natural language: "1:56 pm on 8 May, 2023"
             try:
-                return datetime.strptime(date_str.strip(), "%I:%M %p on %d %B, %Y")
+                return datetime.strptime(date_str, "%I:%M %p on %d %B, %Y")
             except ValueError:
                 pass
-            # Try with abbreviated month: "1:56 pm on 8 May 2023"
+
+            # Try LoCoMo natural language: "1:56 pm on 8 May 2023"
             try:
-                return datetime.strptime(date_str.strip(), "%I:%M %p on %d %B %Y")
+                return datetime.strptime(date_str, "%I:%M %p on %d %B %Y")
             except ValueError:
                 pass
+
             return datetime.max
 
         def extract_qa_date(qa) -> datetime:
@@ -745,26 +808,27 @@ class Pipeline:
         qas_by_date: Dict[str, List[Any]] = defaultdict(list)
         ordering_info: Dict[str, Dict[str, Any]] = {}
 
-        for conv in dataset.conversations:
-            conv_id = conv.conversation_id
-            conv_dict = conv.metadata.get("_raw_conversation", {})
+        # Build samples dict for easy lookup
+        samples_by_id = {s.conversation_id: s for s in dataset.samples}
+
+        for sample in dataset.samples:
+            conv_id = sample.conversation_id
 
             session_dates = {}
-            for key, value in conv_dict.items():
-                match = SESSION_DATE_PATTERN.match(key)
-                if match:
-                    session_num = match.group(1)
-                    unique_session_id = f"{conv_id}:session_{session_num}"
-                    parsed = parse_date(value)
-                    session_dates[unique_session_id] = parsed
-                    if parsed != datetime.max:
-                        date_str = parsed.strftime("%Y-%m-%d")
-                        sessions_by_date[date_str].append(unique_session_id)
-                        all_dates.add(parsed)
+            for session in sample.sessions:
+                session_key = session.session_id
+                unique_session_id = f"{conv_id}:{session_key}"
+                parsed = parse_date(session.session_time) if session.session_time else datetime.max
+                session_dates[unique_session_id] = parsed
+                if parsed != datetime.max:
+                    date_key = parsed.strftime("%Y-%m-%d")  # Use parsed date as key for consistency
+                    sessions_by_date[date_key].append(unique_session_id)
+                    all_dates.add(parsed)
 
             sorted_session_ids = sorted(session_dates.keys(), key=lambda s: session_dates[s])
 
-            conv_qas = [qa for qa in dataset.qa_pairs if qa.metadata.get("conversation_id") == conv_id]
+            # QA pairs are now in sample.qa_pairs
+            conv_qas = sample.qa_pairs
             for qa in conv_qas:
                 qa_date = extract_qa_date(qa)
                 date_str = qa_date.strftime("%Y-%m-%d")
@@ -779,31 +843,36 @@ class Pipeline:
 
         sorted_dates = sorted(all_dates)
 
-        def get_first_session_date(conv):
-            conv_dict = conv.metadata.get("_raw_conversation", {})
-            for key, value in conv_dict.items():
-                match = SESSION_DATE_PATTERN.match(key)
-                if match:
-                    return parse_date(value)
+        def get_first_session_date(sample):
+            if not sample.sessions:
+                return datetime.max
+            for session in sorted(sample.sessions, key=lambda s: s.session_id):
+                if session.session_time:
+                    parsed = parse_date(session.session_time)
+                    if parsed != datetime.max:
+                        return parsed
             return datetime.max
 
-        sorted_convs = sorted(dataset.conversations, key=get_first_session_date)
+        sorted_samples = sorted(dataset.samples, key=get_first_session_date)
 
+        # Rebuild Dataset with sorted samples
+        updated_samples = []
         sorted_qa_pairs = []
-        for conv in sorted_convs:
-            conv_id = conv.conversation_id
-            conv_qas = [qa for qa in dataset.qa_pairs if qa.metadata.get("conversation_id") == conv_id]
-            sorted_qas = sorted(conv_qas, key=extract_qa_date)
+        for sample in sorted_samples:
+            sorted_qas = sorted(sample.qa_pairs, key=extract_qa_date)
             sorted_qa_pairs.extend(sorted_qas)
+            # Keep sessions unsorted here since pipeline processes by date
+            updated_samples.append(sample)
 
         updated_dataset = Dataset(
             dataset_name=dataset.dataset_name,
-            conversations=sorted_convs,
+            samples=updated_samples,
             qa_pairs=sorted_qa_pairs,
             metadata={**dataset.metadata, "date_ordered": True},
         )
 
-        sessions_by_date_str = {k.strftime("%Y-%m-%d") if isinstance(k, datetime) else k: v for k, v in sessions_by_date.items()}
+        # Keep sessions_by_date in YYYY-MM-DD format string
+        sessions_by_date_str = {k: v for k, v in sessions_by_date.items()}
         qas_by_date_str = {k.strftime("%Y-%m-%d") if isinstance(k, datetime) else k: v for k, v in qas_by_date.items()}
 
         date_info = {
@@ -816,40 +885,44 @@ class Pipeline:
         return updated_dataset, date_info
 
     def _apply_conversation_range(self, dataset: Dataset, from_conv: int, to_conv: Optional[int]) -> Dataset:
-        if not dataset.conversations:
+        if not dataset.samples:
             return dataset
 
-        total_convs = len(dataset.conversations)
+        total_convs = len(dataset.samples)
         end_idx = to_conv if to_conv is not None else total_convs
 
         if from_conv < 0:
             from_conv = 0
         if from_conv >= total_convs:
-            return Dataset(dataset_name=dataset.dataset_name, conversations=[], qa_pairs=[], metadata=dataset.metadata)
+            return Dataset(dataset_name=dataset.dataset_name, samples=[], qa_pairs=[], metadata=dataset.metadata)
 
-        selected_convs = dataset.conversations[from_conv:end_idx]
-        selected_ids = {c.conversation_id for c in selected_convs}
-        selected_qa = [qa for qa in dataset.qa_pairs if qa.metadata.get("conversation_id") in selected_ids]
+        selected_samples = dataset.samples[from_conv:end_idx]
+        selected_qa = []
+        for sample in selected_samples:
+            for qa in sample.qa_pairs:
+                qa.conversation_id = sample.conversation_id
+                selected_qa.append(qa)
 
         return Dataset(
             dataset_name=dataset.dataset_name,
-            conversations=selected_convs,
+            samples=selected_samples,
             qa_pairs=selected_qa,
             metadata={**dataset.metadata, "conversation_range": [from_conv, end_idx]},
         )
 
     def _apply_smoke_test(self, dataset: Dataset, num_messages: int, num_questions: int) -> Dataset:
-        trimmed_convs = []
+        trimmed_samples = []
         trimmed_qa = []
 
-        for conv in dataset.conversations:
-            trimmed_convs.append(conv)
-            conv_qa = [qa for qa in dataset.qa_pairs if qa.metadata.get("conversation_id") == conv.conversation_id]
-            trimmed_qa.extend(conv_qa[:num_questions] if num_questions > 0 else conv_qa)
+        for sample in dataset.samples:
+            trimmed_samples.append(sample)
+            for qa in sample.qa_pairs[:num_questions] if num_questions > 0 else sample.qa_pairs:
+                qa.conversation_id = sample.conversation_id
+                trimmed_qa.append(qa)
 
         return Dataset(
             dataset_name=dataset.dataset_name + "_smoke",
-            conversations=trimmed_convs,
+            samples=trimmed_samples,
             qa_pairs=trimmed_qa,
             metadata={**dataset.metadata, "smoke_test": True},
         )
@@ -867,7 +940,7 @@ class Pipeline:
 
         return Dataset(
             dataset_name=dataset.dataset_name,
-            conversations=dataset.conversations,
+            samples=dataset.samples,
             qa_pairs=filtered_qa,
             metadata={**dataset.metadata, "filtered_categories": list(filter_set)},
         )

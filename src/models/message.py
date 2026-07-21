@@ -9,10 +9,10 @@ from typing import Optional, Dict, Any, List
 @dataclass
 class Message:
     """Standard message format."""
-    speaker_id: str
     speaker_name: str
     content: str
     timestamp: Optional[datetime] = None
+    dia_id: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

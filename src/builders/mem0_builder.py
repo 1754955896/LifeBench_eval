@@ -32,7 +32,7 @@ def _load_env_config(project_env: Path) -> dict:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, value = line.split("=", 1)
-                    os.environ.setdefault(key, value)
+                    os.environ[key] = value  # Force override to ensure .env values are used
 
     config["llm_api_key"] = os.environ.get("LLM_API_KEY", "")
     config["llm_base_url"] = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
@@ -224,9 +224,9 @@ ADMIN_API_KEY=admin123
 # Telemetry
 MEM0_TELEMETRY=true
 
-# Reranker settings (SiliconFlow llm_reranker)
+# Reranker settings (SiliconFlow rerank API - Cohere-compatible)
 MEM0_RERANKER_ENABLED=true
-MEM0_RERANKER_PROVIDER=llm_reranker
+MEM0_RERANKER_PROVIDER=cohere
 MEM0_RERANKER_MODEL={env_config['rerank_model']}
 MEM0_RERANKER_API_KEY={env_config['rerank_api_key']}
 MEM0_RERANKER_BASE_URL={env_config['rerank_base_url']}

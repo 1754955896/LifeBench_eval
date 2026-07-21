@@ -1,4 +1,4 @@
-"""Embedding client backed by litellm.Router."""
+"""Embedding client backed by litellm.Router or direct providers."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from ..errors import ConfigNotInitializedError, EmbeddingDimensionError
 from ..logging import add_span_event, get_logger, traced, traced_awaitable
 from ..typing import EmbeddingResponse
 from .router import dump_response, get_response_value, litellm_response_headers, usage_tokens
+from .siliconflow import SiliconFlowEmbeddingProvider
 
 if TYPE_CHECKING:
     from litellm import Router
@@ -82,20 +83,28 @@ def _set_current_span_attrs(attrs: dict[str, Any]) -> None:
 
 
 class EmbedClient:
-    """Embedding client that routes requests through litellm.Router."""
+    """Embedding client that routes requests through litellm.Router or direct providers."""
 
     ALIAS = "embedding"
 
-    def __init__(self, router: Router, *, default_model: str | None = ALIAS) -> None:
-        """Wrap a pre-built litellm Router for embedding calls.
+    def __init__(
+        self,
+        router: Router | None = None,
+        *,
+        default_model: str | None = ALIAS,
+        siliconflow_provider: SiliconFlowEmbeddingProvider | None = None,
+    ) -> None:
+        """Wrap a pre-built litellm Router or direct provider for embedding calls.
 
         Args:
             router: Shared litellm Router; built and cached by the registry layer.
             default_model: Router alias to target, or ``None`` when no endpoint is
                 configured (embed then raises a clear error).
+            siliconflow_provider: Direct SiliconFlow provider, bypassing litellm.
         """
         self._router = router
         self._default_model = default_model
+        self._siliconflow_provider = siliconflow_provider
 
     @traced("llm.embed", record_args=False, record_result=False)
     async def embed(
@@ -108,6 +117,11 @@ class EmbedClient:
         **kwargs: Any,
     ) -> EmbeddingResponse:
         target = model or self._default_model
+
+        # Use SiliconFlow direct provider if configured
+        if self._siliconflow_provider is not None:
+            return await self._embed_siliconflow(task, text, expected_dim)
+
         if target is None:
             msg = "No embed model endpoint configured"
             raise RuntimeError(msg)
@@ -124,10 +138,15 @@ class EmbedClient:
         )
         _set_current_span_attrs(attrs)
         start = perf_counter()
+        # Force dimensions to be passed so providers that need it (e.g. SiliconFlow)
+        # receive it even if litellm would otherwise drop it.
+        call_kwargs = dict(kwargs)
+        if expected_dim is not None:
+            call_kwargs["dimensions"] = expected_dim
         try:
             resp = await traced_awaitable(
                 "llm.embed.provider",
-                self._router.aembedding(model=target, input=text, **kwargs),
+                self._router.aembedding(model=target, input=text, **call_kwargs),
                 attributes=attrs,
                 tracer_name=__name__,
             )
@@ -174,3 +193,47 @@ class EmbedClient:
             usage=usage,
             raw_response=dump_response(resp),
         )
+
+    async def _embed_siliconflow(
+        self,
+        task: str,
+        text: str | list[str],
+        expected_dim: int | None,
+    ) -> EmbeddingResponse:
+        """Direct SiliconFlow embedding, bypassing litellm."""
+        start = perf_counter()
+        add_span_event(
+            "llm.embed.input",
+            {"task": task, "provider": "siliconflow", "text": text},
+        )
+        try:
+            resp = await self._siliconflow_provider.embed(text)
+        except Exception as exc:
+            logger.info(
+                "siliconflow_call",
+                kind="embedding",
+                task=task,
+                status="error",
+                latency_ms=round((perf_counter() - start) * 1000, 2),
+                error=str(exc),
+            )
+            raise
+
+        embeddings = resp.embeddings
+        resolved_dim = expected_dim if expected_dim is not None else _resolved_expected_dim()
+        if resolved_dim is not None:
+            for vec in embeddings:
+                if len(vec) != resolved_dim:
+                    raise EmbeddingDimensionError(
+                        expected=resolved_dim, actual=len(vec), model="siliconflow", task=task
+                    )
+
+        logger.info(
+            "siliconflow_call",
+            kind="embedding",
+            task=task,
+            model=resp.model,
+            status="ok",
+            latency_ms=round((perf_counter() - start) * 1000, 2),
+        )
+        return resp

@@ -1,11 +1,12 @@
 """
-Hindsight builder - starts Hindsight server via docker compose.
+Hindsight builder - prepares environment for MemoryEngine direct mode.
+
+No Docker required for local operation (uses embedded pg0).
 """
 
 import logging
 import os
-import subprocess
-import time
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -47,81 +48,39 @@ def _load_env_config(project_env: Path) -> dict:
     return config
 
 
+def _resolve_env_var(value: str) -> str:
+    """Resolve ${VAR:default} style environment variable references.
+
+    Args:
+        value: String that may contain ${VAR} or ${VAR:default}
+
+    Returns:
+        Resolved string with env vars expanded
+    """
+    if not isinstance(value, str):
+        return value
+
+    pattern = r'\$\{([^}:]+)(?::([^}]*))?\}'
+
+    def replacer(match):
+        var_name = match.group(1)
+        default = match.group(2) or ""
+        return os.environ.get(var_name, default)
+
+    return re.sub(pattern, replacer, value)
+
+
 @register_builder("hindsight")
 class HindsightBuilder(BaseBuilder):
-    """Hindsight builder that starts/stops Hindsight via docker compose.
+    """Hindsight builder for MemoryEngine direct mode.
 
-    Configuration:
-        docker_compose: Path to docker-compose.yaml (relative to project root)
-        docker_wait: Seconds to wait after starting services (default 60)
+    No Docker required - uses embedded pg0 database.
+    Sets environment variables from config for MemoryEngine initialization.
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
-        self.docker_compose = config.get("docker_compose")
-        self.docker_wait = config.get("docker_wait", 60)
         self._started = False
-
-    async def build(self) -> bool:
-        """Start Hindsight server via docker compose."""
-        if self._started:
-            logger.info("Hindsight builder already started")
-            return True
-
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
-        if not project_root:
-            logger.error("Cannot determine project root")
-            return False
-
-        # 1. Prepare .env file
-        if not await self._prepare_env_file(project_root):
-            logger.error("Failed to prepare .env file")
-            return False
-
-        # 2. Start docker services
-        if self.docker_compose:
-            if not await self._start_docker(project_root):
-                return False
-            # Wait for services to be ready
-            logger.info(f"Waiting {self.docker_wait}s for services to be ready...")
-            time.sleep(self.docker_wait)
-
-        self._started = True
-        logger.info("Hindsight builder completed successfully")
-        return True
-
-    async def cleanup(self) -> bool:
-        """Stop Hindsight server via docker compose."""
-        if not self._started:
-            logger.info("Hindsight builder not started, nothing to cleanup")
-            return True
-
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
-        if not project_root or not self.docker_compose:
-            return True
-
-        compose_path = project_root / self.docker_compose
-        if not compose_path.exists():
-            logger.warning(f"Docker compose file not found: {compose_path}")
-            return True
-
-        try:
-            logger.info(f"Stopping docker services: {self.docker_compose}")
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "down"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f"Docker stop failed: {result.stderr}")
-                return False
-            logger.info("Docker services stopped")
-            self._started = False
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop docker services: {e}")
-            return False
 
     def _get_project_root(self) -> Optional[Path]:
         """Get project root from project_root config or script location."""
@@ -132,107 +91,95 @@ class HindsightBuilder(BaseBuilder):
             return cli_path.parent.resolve()
         return None
 
-    async def _prepare_env_file(self, project_root: Path) -> bool:
-        """Prepare .env file for Hindsight docker-compose."""
-        compose_path = project_root / self.docker_compose
-        env_path = compose_path.parent / ".env"
+    async def build(self) -> bool:
+        """Set environment variables and verify MemoryEngine is ready.
 
-        # Load config from LifeBench_eval/.env
-        project_env = project_root / ".env"
-        env_config = _load_env_config(project_env)
-
-        env_content = f"""# Hindsight Server Environment Configuration
-# Generated by HindsightBuilder from LifeBench_eval/.env
-
-# Database settings
-HINDSIGHT_DB_USER=postgres
-HINDSIGHT_DB_PASSWORD=hindsight_dev
-HINDSIGHT_DB_NAME=hindsight_db
-
-# LLM config (OpenAI-compatible)
-HINDSIGHT_API_LLM_PROVIDER=openai
-HINDSIGHT_API_LLM_API_KEY={env_config['llm_api_key']}
-HINDSIGHT_API_LLM_BASE_URL={env_config['llm_base_url']}
-HINDSIGHT_API_LLM_MODEL={env_config['llm_model']}
-
-# Embedding config (OpenAI-compatible, SiliconFlow)
-HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai
-HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY={env_config['vectorize_api_key']}
-HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL={env_config['vectorize_base_url']}
-HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL={env_config['vectorize_model']}
-HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS={env_config['vectorize_dimensions']}
-
-# Reranker config (SiliconFlow)
-HINDSIGHT_API_RERANKER_PROVIDER=siliconflow
-HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY={env_config['rerank_api_key']}
-HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
-HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL={env_config['rerank_model']}
-
-# Vector and Text Search Extensions
-HINDSIGHT_API_VECTOR_EXTENSION=pgvector
-HINDSIGHT_API_TEXT_SEARCH_EXTENSION=pg_textsearch
-"""
-        try:
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(env_content)
-            logger.info(f"Created .env file: {env_path}")
-            logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
-            logger.info(f"  Embedding: {env_config['vectorize_model']} @ {env_config['vectorize_base_url']}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to create .env file: {e}")
-            return False
-
-    async def _start_docker(self, project_root: Path) -> bool:
-        """Start docker compose services."""
-        compose_path = project_root / self.docker_compose
-        if not compose_path.exists():
-            logger.error(f"Docker compose file not found: {compose_path}")
-            return False
-
-        try:
-            # Check if ALL required services are running (not just any container)
-            required_services = ["db", "hindsight"]
-            all_running = True
-            for svc in required_services:
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "ps", "-q", svc],
-                    cwd=str(compose_path.parent),
-                    capture_output=True,
-                    text=True,
-                )
-                if not result.stdout.strip():
-                    all_running = False
-                    logger.info(f"Service {svc} not running, will start all")
-                    break
-
-            if all_running:
-                logger.info("All Docker services already running")
-                return True
-
-            # Start services
-            logger.info(f"Starting docker services: {self.docker_compose}")
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "up", "-d"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f"Docker start failed: {result.stderr}")
-                return False
-
-            logger.info("Docker services started")
+        1. Loads config from LifeBench_eval/.env
+        2. Sets HINDSIGHT_API_* environment variables from config
+        3. Verifies MemoryEngine is available
+        """
+        if self._started:
+            logger.info("Hindsight builder already started")
             return True
 
-        except Exception as e:
-            logger.error(f"Failed to start docker services: {e}")
+        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
+
+        # 1. Load .env file from project root
+        if project_root:
+            project_env = project_root / ".env"
+            if project_env.exists():
+                env_config = _load_env_config(project_env)
+                logger.info(f"Loaded config from {project_env}")
+                logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
+
+        # 2. Set environment variables from config
+        env_mappings = {
+            # Database
+            "HINDSIGHT_API_DATABASE_URL": self.config.get("db_url", "pg0"),
+
+            # Memory LLM (for fact extraction/consolidation)
+            "HINDSIGHT_API_LLM_PROVIDER": self.config.get("memory_llm_provider", "deepseek"),
+            "HINDSIGHT_API_LLM_API_KEY": _resolve_env_var(self.config.get("memory_llm_api_key", "")),
+            "HINDSIGHT_API_LLM_MODEL": self.config.get("memory_llm_model", "deepseek-v4-flash"),
+            "HINDSIGHT_API_LLM_BASE_URL": self.config.get("memory_llm_base_url") or "https://api.deepseek.com",
+
+            # Answer LLM (falls back to memory_llm if not set)
+            "HINDSIGHT_API_ANSWER_LLM_PROVIDER": self.config.get("answer_llm_provider", "deepseek"),
+            "HINDSIGHT_API_ANSWER_LLM_API_KEY": _resolve_env_var(self.config.get("answer_llm_api_key", "")),
+            "HINDSIGHT_API_ANSWER_LLM_MODEL": self.config.get("answer_llm_model", "deepseek-v4-flash"),
+            "HINDSIGHT_API_ANSWER_LLM_BASE_URL": self.config.get("answer_llm_base_url") or "https://api.deepseek.com",
+
+            # Embeddings (SiliconFlow dedicated API)
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": self.config.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER", "siliconflow"),
+            "HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_API_KEY": _resolve_env_var(self.config.get("HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_API_KEY", "")),
+            "HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_MODEL": self.config.get("HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_MODEL", "Qwen/Qwen3-Embedding-4B"),
+            "HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_BASE_URL": self.config.get("HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
+            "HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_DIMENSIONS": str(self.config.get("HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_DIMENSIONS", 1024)),
+
+            # Reranker (SiliconFlow native rerank)
+            "HINDSIGHT_API_RERANKER_PROVIDER": self.config.get("HINDSIGHT_API_RERANKER_PROVIDER", "siliconflow"),
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY": _resolve_env_var(self.config.get("HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY", "")),
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL": self.config.get("HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL", "BAAI/bge-reranker-v2-m3"),
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL": self.config.get("HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
+        }
+
+        # Only set non-empty values to allow env vars to take precedence
+        for key, value in env_mappings.items():
+            if value:
+                os.environ[key] = value
+                # Mask API key in logs
+                if "API_KEY" in key and value:
+                    masked = value[:8] + "..." if len(value) > 8 else "***"
+                    logger.info(f"  {key}={masked}")
+                else:
+                    logger.info(f"  {key}={value}")
+
+        # 3. Verify hindsight_api is available
+        try:
+            from hindsight_api import MemoryEngine
+            logger.info("MemoryEngine available")
+        except ImportError as e:
+            logger.error(f"MemoryEngine not available: {e}")
             return False
+
+        self._started = True
+        logger.info("Hindsight builder completed (local mode, no Docker needed)")
+        return True
+
+    async def cleanup(self) -> bool:
+        """Cleanup - no-op for local mode."""
+        if not self._started:
+            logger.info("Hindsight builder not started, nothing to cleanup")
+            return True
+
+        self._started = False
+        logger.info("Hindsight builder cleanup completed")
+        return True
 
     def get_status(self):
         """Return builder status."""
         return {
             "name": self.__class__.__name__,
             "started": self._started,
-            "docker_compose": self.docker_compose,
+            "mode": "local",
         }

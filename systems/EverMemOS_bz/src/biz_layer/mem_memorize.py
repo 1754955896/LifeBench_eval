@@ -220,7 +220,7 @@ async def _trigger_clustering(
             scenario=profile_scenario,
             min_confidence=0.6,
             enable_versioning=True,
-            auto_extract=True,
+            auto_extract=False,
         )
 
         profile_manager = ProfileManager(

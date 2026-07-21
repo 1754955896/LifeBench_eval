@@ -34,6 +34,8 @@ def parse_json_object(content: str) -> Any:
     fenced = _JSON_FENCE_RE.search(text)
     if fenced:
         text = fenced.group(1).strip()
+    # Strip template escapes (double braces used in prompts to show literal JSON braces)
+    text = _strip_template_braces(text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -42,6 +44,12 @@ def parse_json_object(content: str) -> Any:
         if start >= 0 and end > start:
             return json.loads(text[start : end + 1])
         raise
+
+
+def _strip_template_braces(text: str) -> str:
+    """Strip all template braces that LLM may return literally."""
+    # Replace all occurrences of {{ / }} used to escape literal braces in JSON
+    return text.replace("{{", "{").replace("}}", "}")
 
 
 def schema_memory_type(entity_type: str | None, property_name: str | None = None) -> MemoryType:

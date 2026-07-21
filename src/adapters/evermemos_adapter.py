@@ -97,13 +97,28 @@ class EverMemOSAdapter(BaseAdapter):
         # Search mode
         self.search_mode = config.get("search", {}).get("mode", "lightweight")
 
+        # Shared httpx client for connection pooling
+        self._client: Optional[httpx.AsyncClient] = None
+
         logger.info(f"✅ EverMemOS Adapter initialized with output_dir={self.output_dir}")
         logger.info(f"   API URL: {self.api_url}")
         logger.info(f"   Search mode: {self.search_mode}")
+        logger.info(f"   RPM limit: {self.rpm}")
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create shared httpx client with connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+        return self._client
 
     async def close(self) -> None:
-        """Cleanup resources (no-op for httpx, it handles connection management)."""
-        pass
+        """Cleanup resources - close shared httpx client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def _format_timestamp(self, timestamp: Any) -> str:
         """Format timestamp to ISO format string."""
@@ -159,13 +174,13 @@ class EverMemOSAdapter(BaseAdapter):
 
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(self.conversation_meta_url, json=payload)
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        if result.get("status") == "ok":
-                            self._conversation_meta_saved[conversation_id] = True
-                            return True
+                client = await self._get_client()
+                resp = await client.post(self.conversation_meta_url, json=payload)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("status") == "ok":
+                        self._conversation_meta_saved[conversation_id] = True
+                        return True
             except Exception as exc:
                 logger.warning(
                     "conversation-meta attempt %d/%d failed (conv=%s): %s",
@@ -176,8 +191,13 @@ class EverMemOSAdapter(BaseAdapter):
 
         return False
 
-    async def _memorize_message(self, message: Dict[str, Any], conversation_id: str) -> tuple:
+    async def _memorize_message(self, message: Dict[str, Any], conversation_id: str, client: httpx.AsyncClient = None) -> tuple:
         """Call memorize API for a single message.
+
+        Args:
+            message: Message dict
+            conversation_id: Conversation ID
+            client: Optional shared httpx client (will create one if not provided)
 
         Returns:
             Tuple of (success: bool, status_info: str)
@@ -197,26 +217,26 @@ class EverMemOSAdapter(BaseAdapter):
 
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(self.memorize_url, json=payload)
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        saved_count = result.get("result", {}).get("count", 0)
-                        status_info = result.get("result", {}).get("status_info", "unknown")
+                _client = client or await self._get_client()
+                resp = await _client.post(self.memorize_url, json=payload)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    saved_count = result.get("result", {}).get("count", 0)
+                    status_info = result.get("result", {}).get("status_info", "unknown")
 
-                        if status_info == "accumulated":
-                            logger.info(f"⏳ Queued: {payload['message_id']}")
-                        elif status_info == "extracted":
+                    if status_info == "accumulated":
+                        logger.info(f"⏳ Queued: {payload['message_id']}")
+                    elif status_info == "extracted":
+                        logger.info(f"✓ Extracted {saved_count} memories: {payload['message_id']}")
+                    else:
+                        if saved_count > 0:
                             logger.info(f"✓ Extracted {saved_count} memories: {payload['message_id']}")
                         else:
-                            if saved_count > 0:
-                                logger.info(f"✓ Extracted {saved_count} memories: {payload['message_id']}")
-                            else:
-                                logger.info(f"⏳ Queued: {payload['message_id']}")
+                            logger.info(f"⏳ Queued: {payload['message_id']}")
 
-                        return (result.get("status") == "ok", status_info)
-                    logger.error(f"✗ Failed: HTTP {resp.status_code}: {resp.text[:200]}")
-                    raise Exception(f"HTTP {resp.status_code}: {resp.text}")
+                    return (result.get("status") == "ok", status_info)
+                logger.error(f"✗ Failed: HTTP {resp.status_code}: {resp.text[:200]}")
+                raise Exception(f"HTTP {resp.status_code}: {resp.text}")
             except httpx.ConnectError:
                 logger.error(f"✗ Connection failed: Unable to connect to {self.api_url}")
                 if attempt < self.max_retries - 1:
@@ -239,7 +259,15 @@ class EverMemOSAdapter(BaseAdapter):
     async def add_chunks(
         self, chunks: List[ChunkedMessage], **kwargs
     ) -> Dict[str, Any]:
-        """Ingest message chunks via EverMemOS HTTP API.
+        """Ingest message chunks via EverMemOS HTTP API (concurrent with rate limiting).
+
+        Messages are batched by dia_id: all messages with the same dia_id are
+        concatenated into a single message with format:
+        "speaker: xxx
+        text: xxx
+        ---
+        speaker: yyy
+        text: yyy"
 
         Args:
             chunks: List of ChunkedMessage objects
@@ -248,38 +276,94 @@ class EverMemOSAdapter(BaseAdapter):
         Returns:
             Dict with ingestion stats
         """
-        total_added = 0
-        total_failed = 0
-        total_messages = 0
-        total_extracted = 0
+        # Collect all messages to process
+        all_tasks = []
+        conversation_ids = set()
 
+        # First pass: collect all messages and ensure conversation meta
         for chunk in chunks:
             if not chunk.messages:
                 continue
 
             conversation_id = chunk.conversation_id
+            conversation_ids.add(conversation_id)
 
-            # Ensure conversation metadata is saved first
+            # Ensure conversation metadata is saved first (sync, not parallelized)
             await self._ensure_conversation_meta(conversation_id)
 
-            # Send each message to memorize API
+            # Group messages by dia_id
+            dia_groups: Dict[str, List] = {}
             for msg in chunk.messages:
-                total_messages += 1
+                # Get dia_id from metadata, use message_id or index as fallback
+                dia_id = ""
+                if hasattr(msg, 'metadata') and msg.metadata.get('dia_id'):
+                    dia_id = msg.metadata.get('dia_id', "")
+                if not dia_id:
+                    dia_id = f"_no_diaid_{id(msg)}"
+
+                if dia_id not in dia_groups:
+                    dia_groups[dia_id] = []
+                dia_groups[dia_id].append(msg)
+
+            # Create one message per dia_id group
+            for dia_id, msgs in dia_groups.items():
+                if not msgs:
+                    continue
+
+                # Concatenate content: "speaker: xxx\ntext: xxx\n---\nspeaker: yyy\ntext: yyy"
+                parts = []
+                first_msg = msgs[0]
+                for msg in msgs:
+                    speaker = msg.speaker_name or msg.speaker_id or "Unknown"
+                    content = msg.content or ""
+                    parts.append(f"speaker: {speaker}\ntext: {content}")
+
+                combined_content = "\n---\n".join(parts)
 
                 message_dict = {
-                    "message_id": f"{conversation_id}_{uuid.uuid4().hex[:8]}",
-                    "create_time": self._format_timestamp(msg.timestamp),
-                    "sender": msg.speaker_id,
-                    "sender_name": msg.speaker_name or msg.speaker_id,
+                    "message_id": f"{conversation_id}_{dia_id}_{uuid.uuid4().hex[:8]}",
+                    "create_time": self._format_timestamp(first_msg.timestamp),
+                    "sender": first_msg.speaker_id,
+                    "sender_name": first_msg.speaker_name or first_msg.speaker_id,
                     "type": "text",
-                    "content": msg.content,
+                    "content": combined_content,
                     "group_id": conversation_id,
                     "group_name": conversation_id,
                     "scene": "assistant",
                     "refer_list": [],
                 }
+                all_tasks.append((message_dict, conversation_id))
 
-                success, status_info = await self._memorize_message(message_dict, conversation_id)
+        # Get shared client for all requests
+        client = await self._get_client()
+
+        # Semaphore to control concurrency based on rpm (requests per minute)
+        # Use rpm // 2 as conservative estimate to avoid hitting rate limit
+        # At least 1, at most rpm // 2 concurrent requests
+        max_concurrent = max(1, self.rpm // 2) if self.rpm > 0 else 10
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def bounded_memorize(message_dict: Dict[str, Any], conv_id: str):
+            async with sem:
+                return await self._memorize_message(message_dict, conv_id, client)
+
+        # Execute all memorize requests concurrently
+        results = await asyncio.gather(
+            *[bounded_memorize(msg_dict, conv_id) for msg_dict, conv_id in all_tasks],
+            return_exceptions=True
+        )
+
+        # Count results
+        total_messages = len(all_tasks)
+        total_added = 0
+        total_failed = 0
+        total_extracted = 0
+
+        for result in results:
+            if isinstance(result, Exception):
+                total_failed += 1
+            else:
+                success, status_info = result
                 if success:
                     total_added += 1
                     if status_info == "extracted":
@@ -343,43 +427,43 @@ class EverMemOSAdapter(BaseAdapter):
 
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        if result.get("status") == "ok":
-                            data = result.get("result", {})
-                            memories = data.get("memories", [])
-                            metadata = data.get("metadata", {})
+                client = await self._get_client()
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("status") == "ok":
+                        data = result.get("result", {})
+                        memories = data.get("memories", [])
+                        metadata = data.get("metadata", {})
 
-                            retrieved = []
-                            for mem in memories:
-                                # EverMemOS returns episode/summary, not content
-                                content = mem.get("episode") or mem.get("summary") or mem.get("content", "")
-                                retrieved.append(RetrievedMemory(
-                                    content=content,
-                                    score=mem.get("score", 0.0),
-                                    metadata={
-                                        "timestamp": mem.get("timestamp", ""),
-                                        "user_id": mem.get("user_id", ""),
-                                        "group_id": mem.get("group_id", ""),
-                                        "subject": mem.get("subject", ""),
-                                    },
-                                ))
-
-                            return SearchResult(
-                                question_id=kwargs.get("question_id", ""),
-                                query=query,
-                                conversation_id=conversation_id,
-                                results=retrieved,
-                                retrieval_metadata={
-                                    "adapter": "evermemos",
-                                    "mode": self.search_mode,
-                                    "total_results": len(retrieved),
-                                    "metadata": metadata,
+                        retrieved = []
+                        for mem in memories:
+                            # EverMemOS returns episode/summary, not content
+                            content = mem.get("episode") or mem.get("summary") or mem.get("content", "")
+                            retrieved.append(RetrievedMemory(
+                                content=content,
+                                score=mem.get("score", 0.0),
+                                metadata={
+                                    "timestamp": mem.get("timestamp", ""),
+                                    "user_id": mem.get("user_id", ""),
+                                    "group_id": mem.get("group_id", ""),
+                                    "subject": mem.get("subject", ""),
                                 },
-                            )
-                    raise Exception(f"HTTP {resp.status_code}: {resp.text}")
+                            ))
+
+                        return SearchResult(
+                            question_id=kwargs.get("question_id", ""),
+                            query=query,
+                            conversation_id=conversation_id,
+                            results=retrieved,
+                            retrieval_metadata={
+                                "adapter": "evermemos",
+                                "mode": self.search_mode,
+                                "total_results": len(retrieved),
+                                "metadata": metadata,
+                            },
+                        )
+                raise Exception(f"HTTP {resp.status_code}: {resp.text}")
 
             except Exception as exc:
                 logger.warning(
@@ -439,10 +523,10 @@ class EverMemOSAdapter(BaseAdapter):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            client = await self._get_client()
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
 
             if isinstance(data, dict) and "choices" in data:
                 return data["choices"][0]["message"]["content"]
