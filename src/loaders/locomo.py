@@ -47,8 +47,9 @@ class LoCoMoLoader(BaseLoader):
 
     # Date format patterns for parsing locomo data
     DATE_PATTERNS = [
-        "%I:%M %p on %d %B, %Y",      # "1:56 pm on 8 May, 2023"
-        "%I:%M %p on %d %B %Y",        # "1:56 pm on 8 May 2023"
+        "%Y-%m-%d",                     # "2025-01-01"
+        "%I:%M %p on %d %B, %Y",        # "1:56 pm on 8 May, 2023"
+        "%I:%M %p on %d %B %Y",         # "1:56 pm on 8 May 2023"
     ]
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:

@@ -207,7 +207,7 @@ async def main():
     )
 
     print(
-        f"  ✅ Loaded {len(dataset.conversations)} conversations, {len(dataset.qa_pairs)} QA pairs"
+        f"  ✅ Loaded {len(dataset.samples)} conversations, {sum(len(s.qa_pairs) for s in dataset.samples)} QA pairs"
     )
 
     # Determine output directory

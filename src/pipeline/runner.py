@@ -8,7 +8,7 @@ import time
 import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed as thread_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -618,7 +618,7 @@ class Pipeline:
         return chunks
 
     def _parse_session_time(self, time_str: str) -> Optional[datetime]:
-        """Parse LoCoMo session time string like '1:56 pm on 8 May, 2023' to datetime.
+        """Parse LoCoMo session time string like '1:56 pm on 8 May, 2023' to datetime (UTC).
 
         Falls back to parsing '8 May, 2023' (date only) if full datetime parsing fails.
         """
@@ -628,14 +628,18 @@ class Pipeline:
         # Try full datetime parsing: "1:56 pm on 8 May, 2023"
         for fmt in ("%I:%M %p on %d %B, %Y", "%I:%M %p on %d %B %Y"):
             try:
-                return datetime.strptime(time_str.strip(), fmt)
+                dt = datetime.strptime(time_str.strip(), fmt)
+                return dt.replace(tzinfo=timezone.utc)
             except ValueError:
                 continue
 
-        # Fallback: try date-only parsing: "8 May, 2023"
-        for fmt in ("%d %B, %Y", "%d %B %Y"):
+        # Fallback: try date-only parsing: "8 May, 2023" or "2025-01-01"
+        for fmt in ("%d %B, %Y", "%d %B %Y", "%Y-%m-%d"):
             try:
-                return datetime.strptime(time_str.strip(), fmt)
+                dt = datetime.strptime(time_str.strip(), fmt)
+                # Default to 22:00:00 for date-only, matching _extract_date_info behavior
+                dt = dt.replace(hour=22, minute=0, second=0, tzinfo=timezone.utc)
+                return dt
             except ValueError:
                 continue
 
@@ -938,16 +942,33 @@ class Pipeline:
             return dataset
 
         filter_set = {str(c) for c in self.filter_categories}
-        filtered_qa = [qa for qa in dataset.qa_pairs if qa.category not in filter_set]
 
-        if len(filtered_qa) < len(dataset.qa_pairs):
-            filtered_count = len(dataset.qa_pairs) - len(filtered_qa)
+        # Filter within each sample
+        filtered_samples = []
+        for sample in dataset.samples:
+            filtered_qa = [qa for qa in sample.qa_pairs if qa.category not in filter_set]
+            if filtered_qa:
+                filtered_samples.append(sample)
+
+        # Collect all filtered QA pairs for backward compatibility
+        all_filtered_qa = []
+        for sample in filtered_samples:
+            for qa in sample.qa_pairs:
+                if qa.category not in filter_set:
+                    all_filtered_qa.append(qa)
+
+        # Compute totals for reporting
+        original_total = sum(len(s.qa_pairs) for s in dataset.samples)
+        new_total = len(all_filtered_qa)
+
+        if new_total < original_total:
+            filtered_count = original_total - new_total
             print(f"Filtered out {filtered_count} questions from categories")
 
         return Dataset(
             dataset_name=dataset.dataset_name,
-            samples=dataset.samples,
-            qa_pairs=filtered_qa,
+            samples=filtered_samples,
+            qa_pairs=all_filtered_qa,
             metadata={**dataset.metadata, "filtered_categories": list(filter_set)},
         )
 
