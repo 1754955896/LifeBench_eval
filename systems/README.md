@@ -43,7 +43,29 @@ docker_wait: 30
 
 框架通过环境变量将 API Key 等配置注入到 Docker 容器中。
 
-## 注意事项
+## 各系统配置文件
 
-- `systems/` 目录包含各个记忆系统的完整代码
-- 带 `_cloud` 的配置（`config/systems/*_cloud*.yaml`）包含敏感 API Key，不会提交到版本控制
+不同系统有不同的配置方式：
+
+### MindMemOS
+
+配置文件：`systems/MindMemOS/config/mindmemos/dev.yaml`
+
+运行前需配置此文件，参考 `dev.yaml.example`：
+```bash
+cp systems/MindMemOS/config/mindmemos/dev.yaml.example systems/MindMemOS/config/mindmemos/dev.yaml
+# 编辑 dev.yaml 填入 API Key 等配置
+```
+
+### Hindsight
+
+配置文件：`systems/hindsight/.env`
+
+运行前需配置此文件，参考 `.env.example`：
+```bash
+cp systems/hindsight/.env.example systems/hindsight/.env
+# 编辑 .env 填入 API Key 等配置
+```
+
+Hindsight 使用本地模式（pg0 嵌入式数据库），无需 Docker。
+
