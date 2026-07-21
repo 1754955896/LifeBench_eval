@@ -34,11 +34,10 @@ tests/
 systems/*/
 
 # LifeBench systems - explicitly keep these
-!systems/cognee/
-!systems/memU-server/
+
 !systems/MindMemOS/
-!systems/mem0/
 !systems/EverMemOS_bz/
+!systems/hindsight/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml
