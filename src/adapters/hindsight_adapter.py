@@ -118,8 +118,18 @@ class HindsightAdapter(BaseAdapter):
         return f"{self.bank_id}_{conversation_id}"
 
     async def _get_memory(self):
-        """Get or create MemoryEngine instance."""
+        """Get MemoryEngine from builder's config (shared instance).
+
+        If not found in config (standalone usage), creates a new instance.
+        """
         if self._memory is None:
+            # Try to get from config (set by builder)
+            if "_hindsight_memory" in self.config:
+                self._memory = self.config["_hindsight_memory"]
+                logger.info("Using shared MemoryEngine from builder")
+                return self._memory
+
+            # Fallback: create own instance (standalone mode)
             from hindsight_api import MemoryEngine
             from hindsight_api.config import get_config
 
@@ -140,7 +150,7 @@ class HindsightAdapter(BaseAdapter):
                 memory_llm_base_url=memory_llm_base_url,
             )
             await self._memory.initialize()
-            logger.info("MemoryEngine initialized successfully")
+            logger.info("MemoryEngine initialized (standalone mode)")
         return self._memory
 
     async def _get_llm_config(self):
@@ -175,10 +185,31 @@ class HindsightAdapter(BaseAdapter):
         return budget_map.get(budget_str.lower(), Budget.MID)
 
     def _format_session_content(self, chunk: ChunkedMessage) -> str:
-        """Format ChunkedMessage messages into session content string."""
+        """Format ChunkedMessage messages into session content string.
+
+        Includes blip_caption and query fields for image context, matching the
+        LoCoMo benchmark's data preservation approach.
+        """
         lines = []
         for msg in chunk.messages:
-            lines.append(f"{msg.speaker_name}: {msg.content}")
+            # Base content
+            content = msg.content or ""
+
+            # Include blip_caption if available (image description from BLIP model)
+            blip_caption = getattr(msg, 'blip_caption', None)
+            if not blip_caption and msg.metadata:
+                blip_caption = msg.metadata.get("blip_caption", "")
+            if blip_caption:
+                content += f" [Shared image: {blip_caption}]"
+
+            # Include query if available (image query/context)
+            query = getattr(msg, 'query', None)
+            if not query and msg.metadata:
+                query = msg.metadata.get("query", "")
+            if query:
+                content += f" [Image context: {query}]"
+
+            lines.append(f"{msg.speaker_name}: {content}")
         return "\n".join(lines)
 
     def _parse_session_time(self, chunk: ChunkedMessage) -> Optional[datetime]:
@@ -203,12 +234,15 @@ class HindsightAdapter(BaseAdapter):
         return None
 
     async def close(self) -> None:
-        """Cleanup resources."""
-        if self._memory is not None:
-            # MemoryEngine doesn't have a close method, just set to None
-            self._memory = None
-            logger.info("MemoryEngine closed")
+        """Cleanup resources - no-op since builder manages MemoryEngine lifecycle.
+
+        The MemoryEngine is owned by the builder and will be closed via
+        builder.cleanup() which is called after adapter.close() in cli.py.
+        """
+        # Note: MemoryEngine lifecycle is managed by HindsightBuilder
+        # Do NOT close memory here - let builder handle it
         self._llm_config = None
+        logger.debug("HindsightAdapter.close() - MemoryEngine managed by builder")
 
     async def add_chunks(
         self, chunks: List[ChunkedMessage], **kwargs
@@ -323,18 +357,47 @@ class HindsightAdapter(BaseAdapter):
                     request_context=RequestContext(),
                 )
 
-                # Convert RecallResult to SearchResult
+                # Convert RecallResult to SearchResult (matching benchmark_runner.py pattern)
                 results = recall_result.results or []
+
+                # Extract entities and chunks for richer context
+                entities_dict = {}
+                if recall_result.entities:
+                    for entity_name, entity_state in recall_result.entities.items():
+                        entities_dict[entity_name] = entity_state.model_dump() if hasattr(entity_state, 'model_dump') else str(entity_state)
+
+                chunks_dict = {}
+                if recall_result.chunks:
+                    for chunk_key, chunk_info in recall_result.chunks.items():
+                        chunks_dict[chunk_key] = chunk_info.model_dump() if hasattr(chunk_info, 'model_dump') else str(chunk_info)
 
                 normalized = []
                 for r in results:
-                    entry = RetrievedMemory(
-                        content=getattr(r, "content", "") or str(r),
-                        score=getattr(r, "score", 0) or 0,
-                        metadata={
+                    # MemoryFact uses 'text' for content and 'scores.final' for score
+                    text = getattr(r, "text", "") or str(r)
+                    scores = getattr(r, "scores", None)
+                    score = scores.final if scores else 0.0
+
+                    # Use model_dump() to preserve ALL fields from MemoryFact, matching benchmark behavior
+                    if hasattr(r, 'model_dump'):
+                        fact_info = r.model_dump()
+                    else:
+                        # Fallback: manually extract known fields
+                        fact_info = {
                             "id": getattr(r, "id", "") or "",
-                            "bank_id": bank_id,
+                            "text": text,
+                            "fact_type": getattr(r, "fact_type", "") or "",
+                            "entities": getattr(r, "entities", None) or [],
+                            "context": getattr(r, "context", "") or "",
+                            "occurred_start": getattr(r, "occurred_start", "") or "",
+                            "occurred_end": getattr(r, "occurred_end", "") or "",
+                            "chunk_id": getattr(r, "chunk_id", "") or "",
                         }
+
+                    entry = RetrievedMemory(
+                        content=text,
+                        score=score,
+                        metadata=fact_info
                     )
                     normalized.append(entry)
 
@@ -352,6 +415,10 @@ class HindsightAdapter(BaseAdapter):
                         "bank_id": bank_id,
                         "total_results": len(normalized),
                         "budget": self.budget_str,
+                        # Store full context for answer generation (matching benchmark_runner.py)
+                        "entities": entities_dict,
+                        "chunks": chunks_dict,
+                        "trace": recall_result.trace.model_dump() if recall_result.trace and hasattr(recall_result.trace, 'model_dump') else (recall_result.trace or {}),
                     }
                 )
 
@@ -382,13 +449,14 @@ class HindsightAdapter(BaseAdapter):
 
         Args:
             query: Question text
-            context: Formatted retrieved context
+            context: Formatted retrieved context (fallback)
             conversation_id: Conversation ID
-            **kwargs: Extra parameters
+            **kwargs: Extra parameters including search_result (SearchResult object)
 
         Returns:
             Generated answer string
         """
+        import json
         import pydantic
 
         class QuestionAnswer(pydantic.BaseModel):
@@ -402,7 +470,39 @@ class HindsightAdapter(BaseAdapter):
             logger.error("No LLM API key configured for answer generation")
             return "Error: No LLM API key configured"
 
-        # Prompt from LoComo benchmark
+        # Build rich context matching benchmark_runner.py pattern
+        # Convert SearchResult to RecallResult-like structure with full metadata
+        search_result = kwargs.get("search_result")
+        if search_result:
+            # Build results list with full metadata preserved
+            results_list = []
+            for r in search_result.results:
+                # Start with metadata dict for full fact info
+                result_dict = dict(r.metadata) if r.metadata else {}
+                # Ensure content and score are at result level (matching RecallResult)
+                result_dict["text"] = r.content
+                result_dict["score"] = r.score
+                # Include entities if present in metadata
+                if "entities" not in result_dict:
+                    result_dict["entities"] = []
+                results_list.append(result_dict)
+
+            recall_dict = {
+                # Top-level fields matching RecallResult structure
+                "query": search_result.query,
+                "total_results": search_result.retrieval_metadata.get("total_results", len(results_list)),
+                # Results and context matching RecallResult.model_dump()
+                "results": results_list,
+                "entities": search_result.retrieval_metadata.get("entities", {}),
+                "chunks": search_result.retrieval_metadata.get("chunks", {}),
+                "trace": search_result.retrieval_metadata.get("trace", {}),
+            }
+            context = json.dumps(recall_dict, indent=2, ensure_ascii=False)
+        else:
+            # Fallback to pre-formatted context string
+            pass
+
+        # Prompt matching LoComo benchmark style (from benchmark_runner.py / locomo_benchmark.py)
         prompt = f"""You are a helpful expert assistant answering questions from lme_experiment users based on the provided context.
 
 # CONTEXT:

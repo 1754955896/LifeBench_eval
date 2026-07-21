@@ -75,12 +75,13 @@ class HindsightBuilder(BaseBuilder):
     """Hindsight builder for MemoryEngine direct mode.
 
     No Docker required - uses embedded pg0 database.
-    Sets environment variables from config for MemoryEngine initialization.
+    Creates a single MemoryEngine instance shared by all samples.
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
         self._started = False
+        self._memory: Optional[Any] = None
 
     def _get_project_root(self) -> Optional[Path]:
         """Get project root from project_root config or script location."""
@@ -92,11 +93,11 @@ class HindsightBuilder(BaseBuilder):
         return None
 
     async def build(self) -> bool:
-        """Set environment variables and verify MemoryEngine is ready.
+        """Create MemoryEngine instance and store in config for reuse.
 
         1. Loads config from LifeBench_eval/.env
         2. Sets HINDSIGHT_API_* environment variables from config
-        3. Verifies MemoryEngine is available
+        3. Creates single MemoryEngine instance (shared by all samples)
         """
         if self._started:
             logger.info("Hindsight builder already started")
@@ -154,12 +155,39 @@ class HindsightBuilder(BaseBuilder):
                 else:
                     logger.info(f"  {key}={value}")
 
-        # 3. Verify hindsight_api is available
+        # 3. Create MemoryEngine instance (shared by all samples via config)
         try:
             from hindsight_api import MemoryEngine
-            logger.info("MemoryEngine available")
+            from hindsight_api.config import get_config
+
+            # Configure logging
+            get_config().configure_logging()
+
+            db_url = self.config.get("db_url", os.getenv("HINDSIGHT_API_DATABASE_URL", "pg0"))
+            memory_llm_provider = self.config.get("memory_llm_provider", os.getenv("HINDSIGHT_API_LLM_PROVIDER", "groq"))
+            memory_llm_api_key = _resolve_env_var(self.config.get("memory_llm_api_key", "")) or os.environ.get("LLM_API_KEY", "")
+            memory_llm_model = self.config.get("memory_llm_model", os.getenv("HINDSIGHT_API_LLM_MODEL", "openai/gpt-oss-120b"))
+            memory_llm_base_url = self.config.get("memory_llm_base_url") or os.getenv("HINDSIGHT_API_LLM_BASE_URL") or None
+
+            self._memory = MemoryEngine(
+                db_url=db_url,
+                memory_llm_provider=memory_llm_provider,
+                memory_llm_api_key=memory_llm_api_key,
+                memory_llm_model=memory_llm_model,
+                memory_llm_base_url=memory_llm_base_url,
+            )
+            await self._memory.initialize()
+            logger.info("MemoryEngine initialized successfully")
+
+            # Store in config so adapter can reuse the same instance
+            self.config["_hindsight_memory"] = self._memory
+            logger.info("MemoryEngine stored in config for adapter reuse")
+
         except ImportError as e:
             logger.error(f"MemoryEngine not available: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to create MemoryEngine: {e}")
             return False
 
         self._started = True
@@ -167,10 +195,20 @@ class HindsightBuilder(BaseBuilder):
         return True
 
     async def cleanup(self) -> bool:
-        """Cleanup - no-op for local mode."""
+        """Cleanup - close MemoryEngine and stop pg0."""
         if not self._started:
             logger.info("Hindsight builder not started, nothing to cleanup")
             return True
+
+        # Remove from config first
+        if "_hindsight_memory" in self.config:
+            del self.config["_hindsight_memory"]
+
+        # Close MemoryEngine (stops embedded pg0)
+        if self._memory is not None:
+            await self._memory.close()
+            self._memory = None
+            logger.info("MemoryEngine closed (pg0 stopped)")
 
         self._started = False
         logger.info("Hindsight builder cleanup completed")

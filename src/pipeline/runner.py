@@ -581,7 +581,11 @@ class Pipeline:
                     if dia_id:
                         date_part = dia_id.split("_")[0] if "_" in dia_id else ""
                         if date_part and len(date_part) == 10:
-                            msg_timestamp = datetime.strptime(f"{date_part} 23:59:59", "%Y-%m-%d %H:%M:%S")
+                            # Use session_dt (full datetime) if available, otherwise fallback to date + 23:59:59
+                            if session_dt:
+                                msg_timestamp = session_dt
+                            else:
+                                msg_timestamp = datetime.strptime(f"{date_part} 23:59:59", "%Y-%m-%d %H:%M:%S")
                     # Fallback to session-level datetime when dia_id has no date
                     if msg_timestamp is None:
                         msg_timestamp = session_dt or session_date
@@ -601,11 +605,13 @@ class Pipeline:
                     continue
 
                 unique_session_id = f"{conv_id}:{session_key}"
+                # Use session_dt (full datetime) if available, otherwise fallback to date-only
+                ts_source = session_dt if session_dt else datetime.strptime(date_str, "%Y-%m-%d")
                 chunks.append(ChunkedMessage(
                     messages=messages,
                     conversation_id=conv_id,
                     session_id=unique_session_id,
-                    timestamp=int(datetime.strptime(date_str, "%Y-%m-%d").timestamp()),
+                    timestamp=int(ts_source.timestamp()),
                     session_time_str=getattr(session, 'session_time_original', ''),
                 ))
 

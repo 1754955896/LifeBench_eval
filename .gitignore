@@ -34,7 +34,6 @@ tests/
 systems/*/
 
 # LifeBench systems - explicitly keep these
-!systems/hindsight/
 !systems/cognee/
 !systems/memU-server/
 !systems/MindMemOS/

@@ -15,16 +15,14 @@ _ADAPTER_MODULES: Dict[str, str] = {
     "hindsight": "src.adapters.hindsight_adapter",
     "memos_cloud": "src.adapters.memos_cloud_adapter",
     "memos_cloud_blocking": "src.adapters.memos_cloud_nonblocking_adapter",
-    "zep_cloud": "src.adapters.zep_cloud_adapter",
     "cognee": "src.adapters.cognee_adapter",
     "memu_server": "src.adapters.memu_server_adapter",
-    "graphiti": "src.adapters.graphiti_adapter",
     "graphiti_local": "src.adapters.graphiti_local_adapter",
-    "tencentdb": "src.adapters.tencentdb_adapter",
     "graphrag": "src.adapters.graphrag_adapter",
     "evermemos": "src.adapters.evermemos_adapter",
     "evermemos_native": "src.adapters.evermemos_native_adapter",
     "mindmemos": "src.adapters.mindmemos_adapter",
+    "datatest": "src.adapters.datatest_adapter",
 }
 
 
