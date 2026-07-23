@@ -578,7 +578,14 @@ class _CohereCompatibleRerankClient:
 
     Not a CrossEncoderModel — providers compose it and expose their own
     provider_name / initialization logging.
+
+    Includes a global semaphore for rate limiting and retry with exponential
+    backoff for 429 Too Many Requests and 5xx server errors.
     """
+
+    # Global semaphore shared across all instances to prevent thundering herd
+    _global_semaphore: asyncio.Semaphore | None = None
+    _global_max_concurrent: int = 5  # Conservative default; overridden per-instance
 
     def __init__(
         self,
@@ -588,14 +595,40 @@ class _CohereCompatibleRerankClient:
         timeout: float = 60.0,
         include_top_n: bool = True,
         include_return_documents: bool = False,
+        max_concurrent: int = 5,
+        max_retries: int = 4,
+        retry_base_delay: float = 0.5,
     ):
+        """
+        Args:
+            api_key: API key for the rerank service.
+            model: Model name.
+            rerank_url: Full URL of the /rerank endpoint.
+            timeout: Request timeout in seconds.
+            include_top_n: Include top_n in request body.
+            include_return_documents: Include documents in response.
+            max_concurrent: Maximum concurrent requests (global across all instances).
+            max_retries: Maximum retry attempts for rate limit / server errors.
+            retry_base_delay: Initial retry delay in seconds (doubles each retry).
+        """
         self.api_key = api_key
         self.model = model
         self.rerank_url = rerank_url
         self.timeout = timeout
         self.include_top_n = include_top_n
         self.include_return_documents = include_return_documents
+        self.max_concurrent = max_concurrent
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
         self._async_client: httpx.AsyncClient | None = None
+
+        # Ensure global semaphore is set up with the highest max_concurrent seen
+        if (
+            _CohereCompatibleRerankClient._global_semaphore is None
+            or _CohereCompatibleRerankClient._global_max_concurrent < max_concurrent
+        ):
+            _CohereCompatibleRerankClient._global_max_concurrent = max_concurrent
+            _CohereCompatibleRerankClient._global_semaphore = asyncio.Semaphore(max_concurrent)
 
     async def initialize(self) -> None:
         if self._async_client is not None:
@@ -607,6 +640,71 @@ class _CohereCompatibleRerankClient:
                 "Content-Type": "application/json",
             },
         )
+
+    async def _request_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, object],
+    ) -> dict[str, Any]:
+        """Make a single POST request with retry logic for 429 and 5xx errors."""
+        last_error: Exception | None = None
+        delay = self.retry_base_delay
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await client.post(url, headers=headers, json=body)
+                if response.status_code == 429:
+                    # Rate limited — retry with backoff
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"Cohere-compatible rerank: 429 rate limit (attempt {attempt + 1}/{self.max_retries + 1}), "
+                            f"retrying in {delay:.1f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        raise httpx.HTTPStatusError(
+                            "429 Too Many Requests after retries",
+                            request=response.request,
+                            response=response,
+                        )
+                if response.status_code >= 500:
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"Cohere-compatible rerank: server error {response.status_code} "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1}), retrying in {delay:.1f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        continue
+                response.raise_for_status()
+                return response.json()
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+            except httpx.HTTPStatusError as e:
+                # 4xx other than 429 — don't retry
+                if e.response.status_code < 500 and e.response.status_code != 429:
+                    raise
+                last_error = e
+                if attempt < self.max_retries:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+            except Exception as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+
+        raise last_error or RuntimeError(f"Cohere-compatible rerank request failed after {self.max_retries + 1} attempts")
 
     async def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         if self._async_client is None:
@@ -620,11 +718,9 @@ class _CohereCompatibleRerankClient:
             query_groups.setdefault(query, []).append((idx, text))
 
         all_scores = [0.0] * len(pairs)
+        semaphore = _CohereCompatibleRerankClient._global_semaphore
 
-        for query, indexed_texts in query_groups.items():
-            texts = [text for _, text in indexed_texts]
-            indices = [idx for idx, _ in indexed_texts]
-
+        async def _rerank_one_query(query: str, texts: list[str], indices: list[int]) -> None:
             body: dict[str, object] = {
                 "model": self.model,
                 "query": query,
@@ -634,18 +730,25 @@ class _CohereCompatibleRerankClient:
             if self.include_top_n:
                 body["top_n"] = len(texts)
 
-            response = await self._async_client.post(
+            result = await self._request_with_retry(
+                self._async_client,
                 self.rerank_url,
-                headers=reranker_bank_attribution_headers(),
-                json=body,
+                reranker_bank_attribution_headers(),
+                body,
             )
-            response.raise_for_status()
-            result = response.json()
 
             for item in result.get("results", []):
                 original_idx = item["index"]
                 score = item["relevance_score"]
                 all_scores[indices[original_idx]] = score
+
+        # All query groups are launched concurrently, with the global semaphore
+        # enforcing the max concurrent request limit across all parallel recall ops.
+        tasks = [
+            _rerank_one_query(query, [t for _, t in indexed_texts], [i for i, _ in indexed_texts])
+            for query, indexed_texts in query_groups.items()
+        ]
+        await asyncio.gather(*tasks)
 
         return all_scores
 
@@ -817,6 +920,9 @@ class SiliconFlowCrossEncoder(CrossEncoderModel):
     SiliconFlow (https://siliconflow.cn) exposes a Cohere-compatible /rerank
     endpoint. Shares the HTTP client with ZeroEntropy/Cohere-custom-endpoint
     via _CohereCompatibleRerankClient.
+
+    Includes global semaphore rate limiting and retry with exponential backoff
+    for 429 Too Many Requests and 5xx server errors.
     """
 
     RERANK_PATH = "/rerank"
@@ -827,6 +933,7 @@ class SiliconFlowCrossEncoder(CrossEncoderModel):
         model: str = DEFAULT_RERANKER_SILICONFLOW_MODEL,
         base_url: str = DEFAULT_RERANKER_SILICONFLOW_BASE_URL,
         timeout: float = 60.0,
+        max_concurrent: int = 5,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -835,6 +942,7 @@ class SiliconFlowCrossEncoder(CrossEncoderModel):
             model=model,
             rerank_url=f"{self.base_url}{self.RERANK_PATH}",
             timeout=timeout,
+            max_concurrent=max_concurrent,
         )
 
     @property
@@ -1721,6 +1829,7 @@ def create_cross_encoder_from_env() -> CrossEncoderModel:
             model=config.reranker_siliconflow_model,
             base_url=config.reranker_siliconflow_base_url,
             timeout=config.reranker_siliconflow_timeout,
+            max_concurrent=config.reranker_siliconflow_max_concurrent,
         )
     elif provider == "google":
         project_id = config.reranker_google_project_id

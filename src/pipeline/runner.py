@@ -23,7 +23,7 @@ from src.evaluators.base import BaseEvaluator
 from src.models import Dataset, SearchResult, AnswerResult
 from src.models.message import Conversation, Message
 from src.pipeline.checkpoint import CheckpointManager
-from src.utils import get_deepseek_balance
+from src.trackers import PerOpTracker
 
 
 class Pipeline:
@@ -47,7 +47,7 @@ class Pipeline:
         filter_categories: Optional[List[str]] = None,
         stats_collector=None,
         debug: bool = False,
-        track_cost: bool = False,
+        per_op_tracker: Optional[PerOpTracker] = None,
     ):
         self.adapter = adapter
         self.evaluator = evaluator
@@ -58,7 +58,7 @@ class Pipeline:
         self.filter_categories = filter_categories or []
         self._stats_collector = stats_collector
         self.debug = debug
-        self.track_cost = track_cost
+        self.per_op_tracker = per_op_tracker
 
         self.checkpoint = (
             CheckpointManager(output_dir=self.output_dir, run_name=run_name)
@@ -122,20 +122,6 @@ class Pipeline:
 
         # Track stage timings
         stage_timings: Dict[str, Dict[str, float]] = {}
-        add_search_balance_before = None
-        add_search_balance_after = None
-
-        # Track balance before ADD+SEARCH if track_cost enabled
-        if self.track_cost and ("add" in stages or "search" in stages):
-            try:
-                add_search_balance_before = get_deepseek_balance(".env")
-                # Extract total CNY balance
-                for info in add_search_balance_before.get("balance_infos", []):
-                    if info.get("currency") == "CNY":
-                        add_search_balance_before = float(info.get("total_balance", "0"))
-                        break
-            except Exception:
-                add_search_balance_before = None
 
         sorted_dates = date_info["sorted_dates"]
         sessions_by_date = date_info["sessions_by_date"]
@@ -269,27 +255,26 @@ class Pipeline:
 
                                     # Pass all session chunks at once so the adapter can merge
                                     # them into a single memory-system call for efficient batch processing
-                                    balance_before = None
-                                    balance_after = None
-                                    if self.track_cost:
-                                        balance_before = get_deepseek_balance(".env")
-                                    start = time.perf_counter()
-                                    r = await self.adapter.add_chunks(session_chunks)
-                                    latency = time.perf_counter() - start
-                                    if self.track_cost:
-                                        balance_after = get_deepseek_balance(".env")
+                                    # Per-op tracking
+                                    if self.per_op_tracker:
+                                        with self.per_op_tracker.track("add") as ctx:
+                                            r = await self.adapter.add_chunks(session_chunks)
+                                        record = ctx.record(result_data={
+                                            "date": date_str,
+                                            "session_id": session_id,
+                                            "num_chunks": len(session_chunks),
+                                            "num_messages": sum(len(c.messages) for c in session_chunks),
+                                            "added": r.get("added", 0),
+                                            "failed": r.get("failed", 0),
+                                        })
+                                        # Use tracker's elapsed (includes adapter call time)
+                                        latency = record.elapsed_seconds
+                                    else:
+                                        start = time.perf_counter()
+                                        r = await self.adapter.add_chunks(session_chunks)
+                                        latency = time.perf_counter() - start
+
                                     total_messages = sum(len(c.messages) for c in session_chunks)
-                                    # Extract total_balance from balance_infos
-                                    def get_total(bal):
-                                        if bal is None:
-                                            return None
-                                        for info in bal.get("balance_infos", []):
-                                            if info.get("currency") == "CNY":
-                                                return float(info.get("total_balance", "0"))
-                                        return None
-                                    cost = None
-                                    if balance_before is not None and balance_after is not None:
-                                        cost = get_total(balance_before) - get_total(balance_after)
                                     entry = {
                                         "date": date_str,
                                         "session_id": session_id,
@@ -299,10 +284,6 @@ class Pipeline:
                                         "added": r.get("added", 0),
                                         "failed": r.get("failed", 0),
                                     }
-                                    if self.track_cost:
-                                        entry["balance_before"] = get_total(balance_before)
-                                        entry["balance_after"] = get_total(balance_after)
-                                        entry["cost_cny"] = round(cost, 4)
                                     result["add_latency"].append(entry)
                             finally:
                                 if debug_file:
@@ -463,21 +444,8 @@ class Pipeline:
         evaluate_stage_elapsed = time_module.time() - evaluate_stage_start
         stage_timings["evaluate"] = {"elapsed": evaluate_stage_elapsed, "count": len(self._results.get("answer_results", []))}
 
-        # Track balance after ADD+SEARCH if track_cost enabled
-        if self.track_cost and ("add" in stages or "search" in stages):
-            try:
-                add_search_balance_after = get_deepseek_balance(".env")
-                for info in add_search_balance_after.get("balance_infos", []):
-                    if info.get("currency") == "CNY":
-                        add_search_balance_after = float(info.get("total_balance", "0"))
-                        break
-            except Exception:
-                add_search_balance_after = None
-
-        # Store stage timings and balance info for report
+        # Store stage timings for report
         self._results["stage_timings"] = stage_timings
-        self._results["add_search_balance_before"] = add_search_balance_before
-        self._results["add_search_balance_after"] = add_search_balance_after
 
         # Load individual result files from results/ directory (saved by adapter's _save_search_result)
         import json
@@ -1113,8 +1081,6 @@ class Pipeline:
 
         eval_result = self._results["eval_result"]
         stage_timings = self._results.get("stage_timings", {})
-        add_search_balance_before = self._results.get("add_search_balance_before")
-        add_search_balance_after = self._results.get("add_search_balance_after")
 
         lines = [
             "=" * 60,
@@ -1134,15 +1100,6 @@ class Pipeline:
                 count = info.get("count", "")
                 count_str = f" ({count} items)" if count else ""
                 lines.append(f"  {stage_name}: {elapsed:.2f}s{count_str}")
-            lines.append("")
-
-        # Balance change for add+search
-        if add_search_balance_before is not None and add_search_balance_after is not None:
-            balance_diff = add_search_balance_before - add_search_balance_after
-            lines.append(f"💰 ADD+SEARCH Balance Change:")
-            lines.append(f"  Before: {add_search_balance_before:.2f} CNY")
-            lines.append(f"  After:  {add_search_balance_after:.2f} CNY")
-            lines.append(f"  Cost:   {balance_diff:.4f} CNY")
             lines.append("")
 
         # Evaluation results

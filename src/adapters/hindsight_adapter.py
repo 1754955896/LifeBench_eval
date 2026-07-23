@@ -69,38 +69,30 @@ class HindsightAdapter(BaseAdapter):
         self.budget_str = config.get("budget", "mid")
 
         # Database configuration
-        self.db_url = config.get("db_url", os.getenv("HINDSIGHT_API_DATABASE_URL", "pg0"))
+        self.db_url = config.get("db_url", "pg0")
 
         # Memory LLM configuration (for fact extraction/consolidation)
-        self.memory_llm_provider = config.get(
-            "memory_llm_provider", os.getenv("HINDSIGHT_API_LLM_PROVIDER", "groq")
-        )
-        self.memory_llm_api_key = config.get(
-            "memory_llm_api_key", os.getenv("HINDSIGHT_API_LLM_API_KEY", "")
-        )
-        self.memory_llm_model = config.get(
-            "memory_llm_model", os.getenv("HINDSIGHT_API_LLM_MODEL", "openai/gpt-oss-120b")
-        )
-        self.memory_llm_base_url = config.get(
-            "memory_llm_base_url", os.getenv("HINDSIGHT_API_LLM_BASE_URL") or None
-        )
+        self.memory_llm_provider = config.get("memory_llm_provider", "deepseek")
+        self.memory_llm_api_key = config.get("memory_llm_api_key", "")
+        self.memory_llm_model = config.get("memory_llm_model", "deepseek-v4-flash")
+        self.memory_llm_base_url = config.get("memory_llm_base_url")
 
         # Answer LLM configuration (falls back to memory LLM config)
         self.answer_llm_provider = config.get(
             "answer_llm_provider",
-            config.get("llm", {}).get("provider", os.getenv("HINDSIGHT_API_ANSWER_LLM_PROVIDER", self.memory_llm_provider))
+            config.get("llm", {}).get("provider", self.memory_llm_provider)
         )
         self.answer_llm_api_key = config.get(
             "answer_llm_api_key",
-            config.get("llm", {}).get("api_key", os.getenv("HINDSIGHT_API_ANSWER_LLM_API_KEY", self.memory_llm_api_key))
+            config.get("llm", {}).get("api_key", self.memory_llm_api_key)
         )
         self.answer_llm_model = config.get(
             "answer_llm_model",
-            config.get("llm", {}).get("model", os.getenv("HINDSIGHT_API_ANSWER_LLM_MODEL", "gpt-4o-mini"))
+            config.get("llm", {}).get("model", self.memory_llm_model)
         )
         self.answer_llm_base_url = config.get(
             "answer_llm_base_url",
-            config.get("llm", {}).get("base_url", os.getenv("HINDSIGHT_API_ANSWER_LLM_BASE_URL", self.memory_llm_base_url) or "")
+            config.get("llm", {}).get("base_url", self.memory_llm_base_url) or ""
         )
         self.answer_llm_temperature = config.get("llm", {}).get("temperature", 0)
         self.answer_llm_max_tokens = config.get("llm", {}).get("max_tokens", 32768)
@@ -136,11 +128,11 @@ class HindsightAdapter(BaseAdapter):
             # Configure logging
             get_config().configure_logging()
 
-            # Resolve environment variables at runtime (in case builder set them after __init__)
-            memory_llm_api_key = _resolve_env_var(self.memory_llm_api_key) or os.environ.get("LLM_API_KEY", "")
+            # Use instance variables directly (config values set by builder via env vars)
+            memory_llm_api_key = _resolve_env_var(self.memory_llm_api_key) if self.memory_llm_api_key else ""
             memory_llm_base_url = _resolve_env_var(self.memory_llm_base_url) if self.memory_llm_base_url else None
-            memory_llm_model = _resolve_env_var(self.memory_llm_model) or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
-            memory_llm_provider = _resolve_env_var(self.memory_llm_provider) or os.environ.get("LLM_PROVIDER", "openai")
+            memory_llm_model = _resolve_env_var(self.memory_llm_model) if self.memory_llm_model else "deepseek-v4-flash"
+            memory_llm_provider = _resolve_env_var(self.memory_llm_provider) if self.memory_llm_provider else "deepseek"
 
             self._memory = MemoryEngine(
                 db_url=self.db_url,
@@ -158,11 +150,11 @@ class HindsightAdapter(BaseAdapter):
         if self._llm_config is None:
             from hindsight_api.engine.llm_wrapper import LLMConfig
 
-            # Resolve environment variables at runtime with fallbacks
-            answer_llm_api_key = _resolve_env_var(self.answer_llm_api_key) or os.environ.get("LLM_API_KEY", "")
-            answer_llm_base_url = _resolve_env_var(self.answer_llm_base_url) if self.answer_llm_base_url else os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
-            answer_llm_model = _resolve_env_var(self.answer_llm_model) or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
-            answer_llm_provider = _resolve_env_var(self.answer_llm_provider) or os.environ.get("LLM_PROVIDER", "openai")
+            # Use instance variables directly (config values set by builder via env vars)
+            answer_llm_api_key = _resolve_env_var(self.answer_llm_api_key) if self.answer_llm_api_key else ""
+            answer_llm_base_url = _resolve_env_var(self.answer_llm_base_url) if self.answer_llm_base_url else "https://api.deepseek.com"
+            answer_llm_model = _resolve_env_var(self.answer_llm_model) if self.answer_llm_model else "deepseek-v4-flash"
+            answer_llm_provider = _resolve_env_var(self.answer_llm_provider) if self.answer_llm_provider else "deepseek"
 
             self._llm_config = LLMConfig(
                 provider=answer_llm_provider,

@@ -39,7 +39,8 @@ from src.builders.registry import create_builder
 from src.evaluators.registry import create_evaluator
 from src.loaders.registry import load_dataset
 from src.pipeline import Pipeline
-from src.pipeline.runner_multi_thread import PipelineMultiThread
+from src.trackers import PerOpTracker, GlobalMonitor
+from src.trackers.system_trackers import get_tracker
 from src.utils.config import load_yaml, normalize_system_config
 
 
@@ -117,14 +118,15 @@ async def main():
         help="Enable debug mode (detailed ingestion logs)",
     )
     parser.add_argument(
-        "--track-cost",
-        action="store_true",
-        help="Track DeepSeek API cost by querying balance before/after each add",
+        "--tracker-interval",
+        type=float,
+        default=5.0,
+        help="GlobalMonitor sampling interval in seconds (default: 5.0)",
     )
     parser.add_argument(
-        "--multi-thread",
+        "--enable-tracker",
         action="store_true",
-        help="Use multi-threaded batch processing runner",
+        help="Enable resource tracking for the memory system",
     )
 
     args = parser.parse_args()
@@ -235,25 +237,35 @@ async def main():
 
     filter_categories = dataset_config.get("evaluation", {}).get("filter_category", [])
 
-    if args.multi_thread:
-        pipeline = PipelineMultiThread(
-            adapter=adapter,
-            evaluator=evaluator,
+    # Initialize tracker and global monitor based on system name
+    per_op_tracker = None
+    global_monitor = None
+    if args.enable_tracker:
+        system_tracker = get_tracker(args.system, system_config)
+        if system_tracker is None:
+            # Fallback to default tracker
+            system_tracker = get_tracker("default", system_config)
+            tracker_name = f"{args.system} (using default)"
+        else:
+            tracker_name = args.system
+        print(f"\n[bold cyan]Initializing resource tracker for: {tracker_name}[/bold cyan]")
+        per_op_tracker = PerOpTracker(system_tracker, output_dir=output_dir)
+        global_monitor = GlobalMonitor(
+            tracker=system_tracker,
+            interval=args.tracker_interval,
             output_dir=output_dir,
-            filter_categories=filter_categories,
-            debug=args.debug,
-            track_cost=args.track_cost,
         )
-        print(f"  ✅ Created multi-threaded pipeline")
-    else:
-        pipeline = Pipeline(
-            adapter=adapter,
-            evaluator=evaluator,
-            output_dir=output_dir,
-            filter_categories=filter_categories,
-            debug=args.debug,
-            track_cost=args.track_cost,
-        )
+        global_monitor.start()
+        print(f"  ✅ GlobalMonitor started (interval={args.tracker_interval}s)")
+
+    pipeline = Pipeline(
+        adapter=adapter,
+        evaluator=evaluator,
+        output_dir=output_dir,
+        filter_categories=filter_categories,
+        debug=args.debug,
+        per_op_tracker=per_op_tracker,
+    )
 
     print(f"  ✅ Created pipeline, output: {output_dir}")
 
@@ -272,6 +284,19 @@ async def main():
         print(f"Results saved to: [cyan]{output_dir}[/cyan]\n")
 
     finally:
+        # Stop global monitor and save report
+        if global_monitor:
+            global_monitor.stop()
+            report = global_monitor.get_report()
+            print(f"\n[bold cyan]📊 Resource Summary ({report.get('system', 'unknown')})[/bold cyan]")
+            summary = report.get("summary", {})
+            if summary:
+                print(f"  Peak Memory: {summary.get('peak_memory_mb', 'N/A')} MB")
+                print(f"  Avg Memory: {summary.get('avg_memory_mb', 'N/A')} MB")
+                print(f"  Peak CPU: {summary.get('peak_cpu_percent', 'N/A')}%")
+                print(f"  Storage Delta: {summary.get('storage_delta_mb', 'N/A')} MB")
+            print(f"  Timeline saved to: [cyan]{output_dir / 'global_resource_timeline.json'}[/cyan]")
+
         if hasattr(adapter, "close"):
             await adapter.close()
         if hasattr(evaluator, "close"):

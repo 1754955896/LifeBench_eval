@@ -75,6 +75,7 @@ dependencies = [
     "claude-agent-sdk>=0.2.82",
     "boto3>=1.42.74",
     "croniter>=2.0.0", # Cron parsing for scheduled mental model refresh
+    "psutil>=7.2.2",
 ]
 
 [project.optional-dependencies]

@@ -15,6 +15,9 @@ bank_id: "default"
 budget: "mid"  # candidates sent to rerank: low=~100, mid=~300, high=~1000
 db_url: "pg0"  # embedded mode, or "postgresql://user:pass@host/db"
 
+# LLM Proxy for token tracking
+llm_proxy_url: "http://localhost:18443"
+
 # Memory LLM (for fact extraction/consolidation in MemoryEngine)
 # Hindsight supports deepseek provider directly
 memory_llm_provider: "deepseek"

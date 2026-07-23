@@ -16,36 +16,6 @@ from src.builders.registry import register_builder
 logger = logging.getLogger(__name__)
 
 
-def _load_env_config(project_env: Path) -> dict:
-    """Load configuration from project .env file.
-
-    Args:
-        project_env: Path to LifeBench_eval/.env
-
-    Returns:
-        Dict with LLM, embedding, rerank settings
-    """
-    config = {}
-    if project_env.exists():
-        with open(project_env, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key, value)
-
-    config["llm_api_key"] = os.environ.get("LLM_API_KEY", "")
-    config["llm_base_url"] = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
-    config["llm_model"] = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
-    config["vectorize_api_key"] = os.environ.get("VECTORIZE_API_KEY", "")
-    config["vectorize_base_url"] = os.environ.get("VECTORIZE_BASE_URL", "https://api.siliconflow.cn/v1")
-    config["vectorize_model"] = os.environ.get("VECTORIZE_MODEL", "Qwen/Qwen3-Embedding-4B")
-    config["vectorize_dimensions"] = os.environ.get("VECTORIZE_DIMENSIONS", "1024")
-    config["rerank_api_key"] = os.environ.get("RERANK_API_KEY", os.environ.get("VECTORIZE_API_KEY", ""))
-    config["rerank_base_url"] = os.environ.get("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")
-    config["rerank_model"] = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-
-    return config
 
 
 def _resolve_env_var(value: str) -> str:
@@ -103,17 +73,10 @@ class HindsightBuilder(BaseBuilder):
             logger.info("Hindsight builder already started")
             return True
 
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
+        # 1. Set environment variables from config (yaml already has resolved values)
+        # If llm_proxy_url is configured, redirect LLM traffic through proxy for token tracking
+        llm_proxy_url = self.config.get("llm_proxy_url")
 
-        # 1. Load .env file from project root
-        if project_root:
-            project_env = project_root / ".env"
-            if project_env.exists():
-                env_config = _load_env_config(project_env)
-                logger.info(f"Loaded config from {project_env}")
-                logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
-
-        # 2. Set environment variables from config
         env_mappings = {
             # Database
             "HINDSIGHT_API_DATABASE_URL": self.config.get("db_url", "pg0"),
@@ -122,13 +85,15 @@ class HindsightBuilder(BaseBuilder):
             "HINDSIGHT_API_LLM_PROVIDER": self.config.get("memory_llm_provider", "deepseek"),
             "HINDSIGHT_API_LLM_API_KEY": _resolve_env_var(self.config.get("memory_llm_api_key", "")),
             "HINDSIGHT_API_LLM_MODEL": self.config.get("memory_llm_model", "deepseek-v4-flash"),
-            "HINDSIGHT_API_LLM_BASE_URL": self.config.get("memory_llm_base_url") or "https://api.deepseek.com",
+            # If proxy configured, route LLM traffic through proxy for token tracking
+            "HINDSIGHT_API_LLM_BASE_URL": llm_proxy_url or self.config.get("memory_llm_base_url") or "https://api.deepseek.com",
 
             # Answer LLM (falls back to memory_llm if not set)
             "HINDSIGHT_API_ANSWER_LLM_PROVIDER": self.config.get("answer_llm_provider", "deepseek"),
             "HINDSIGHT_API_ANSWER_LLM_API_KEY": _resolve_env_var(self.config.get("answer_llm_api_key", "")),
             "HINDSIGHT_API_ANSWER_LLM_MODEL": self.config.get("answer_llm_model", "deepseek-v4-flash"),
-            "HINDSIGHT_API_ANSWER_LLM_BASE_URL": self.config.get("answer_llm_base_url") or "https://api.deepseek.com",
+            # If proxy configured, route LLM traffic through proxy for token tracking
+            "HINDSIGHT_API_ANSWER_LLM_BASE_URL": llm_proxy_url or self.config.get("answer_llm_base_url") or "https://api.deepseek.com",
 
             # Embeddings (SiliconFlow dedicated API)
             "HINDSIGHT_API_EMBEDDINGS_PROVIDER": self.config.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER", "siliconflow"),
@@ -163,11 +128,13 @@ class HindsightBuilder(BaseBuilder):
             # Configure logging
             get_config().configure_logging()
 
-            db_url = self.config.get("db_url", os.getenv("HINDSIGHT_API_DATABASE_URL", "pg0"))
-            memory_llm_provider = self.config.get("memory_llm_provider", os.getenv("HINDSIGHT_API_LLM_PROVIDER", "groq"))
-            memory_llm_api_key = _resolve_env_var(self.config.get("memory_llm_api_key", "")) or os.environ.get("LLM_API_KEY", "")
-            memory_llm_model = self.config.get("memory_llm_model", os.getenv("HINDSIGHT_API_LLM_MODEL", "openai/gpt-oss-120b"))
-            memory_llm_base_url = self.config.get("memory_llm_base_url") or os.getenv("HINDSIGHT_API_LLM_BASE_URL") or None
+            db_url = self.config.get("db_url", "pg0")
+            memory_llm_provider = self.config.get("memory_llm_provider", "deepseek")
+            memory_llm_api_key = _resolve_env_var(self.config.get("memory_llm_api_key", ""))
+            memory_llm_model = self.config.get("memory_llm_model", "deepseek-v4-flash")
+            # If proxy configured, route LLM traffic through proxy for token tracking
+            llm_proxy_url = self.config.get("llm_proxy_url")
+            memory_llm_base_url = llm_proxy_url or self.config.get("memory_llm_base_url")
 
             self._memory = MemoryEngine(
                 db_url=db_url,

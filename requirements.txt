@@ -22,6 +22,8 @@ rich>=13.7.0
 # Utilities
 pydantic>=2.0.0
 filelock>=3.13.0
+psutil>=5.9.0  # For resource tracking (ProcessTracker)
+flask>=3.0.0   # For LLM proxy service
 
 # 我们推荐系统特定包在系统文件夹创建venv环境，避免与其他系统其他包冲突
 

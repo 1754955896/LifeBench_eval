@@ -425,6 +425,7 @@ ENV_RERANKER_ZEROENTROPY_BASE_URL = "HINDSIGHT_API_RERANKER_ZEROENTROPY_BASE_URL
 ENV_RERANKER_SILICONFLOW_API_KEY = "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY"
 ENV_RERANKER_SILICONFLOW_MODEL = "HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL"
 ENV_RERANKER_SILICONFLOW_BASE_URL = "HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL"
+ENV_RERANKER_SILICONFLOW_MAX_CONCURRENT = "HINDSIGHT_API_RERANKER_SILICONFLOW_MAX_CONCURRENT"
 
 # Alibaba Cloud DashScope configuration (reranker only)
 ENV_RERANKER_ALIBABA_API_KEY = "HINDSIGHT_API_RERANKER_ALIBABA_API_KEY"
@@ -905,6 +906,7 @@ DEFAULT_RERANKER_ZEROENTROPY_MODEL = "zerank-2"
 
 DEFAULT_RERANKER_SILICONFLOW_MODEL = "BAAI/bge-reranker-v2-m3"
 DEFAULT_RERANKER_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_RERANKER_SILICONFLOW_MAX_CONCURRENT = 5
 
 DEFAULT_RERANKER_ALIBABA_MODEL = "qwen3-rerank"
 
@@ -1831,6 +1833,7 @@ class HindsightConfig:
     reranker_siliconflow_model: str
     reranker_siliconflow_base_url: str
     reranker_siliconflow_timeout: float
+    reranker_siliconflow_max_concurrent: int
     reranker_alibaba_api_key: str | None
     reranker_alibaba_model: str
     reranker_alibaba_timeout: float
@@ -2112,6 +2115,7 @@ class HindsightConfig:
         "embeddings_zeroentropy_base_url",
         "reranker_zeroentropy_base_url",
         "reranker_siliconflow_base_url",
+        "reranker_siliconflow_max_concurrent",
         # Service Account Keys
         "llm_vertexai_service_account_key",
         "embeddings_vertexai_service_account_key",
@@ -2813,6 +2817,9 @@ class HindsightConfig:
             ),
             reranker_siliconflow_timeout=float(
                 os.getenv(ENV_RERANKER_SILICONFLOW_TIMEOUT, str(DEFAULT_RERANKER_SILICONFLOW_TIMEOUT))
+            ),
+            reranker_siliconflow_max_concurrent=int(
+                os.getenv(ENV_RERANKER_SILICONFLOW_MAX_CONCURRENT, str(DEFAULT_RERANKER_SILICONFLOW_MAX_CONCURRENT))
             ),
             # Alibaba Cloud DashScope reranker
             reranker_alibaba_api_key=os.getenv(ENV_RERANKER_ALIBABA_API_KEY),
