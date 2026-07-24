@@ -254,11 +254,16 @@ class Pipeline:
                                             debug_file.write("\n")
 
                                     # Pass all session chunks at once so the adapter can merge
-                                    # them into a single memory-system call for efficient batch processing
+                                    # them into a single memory-system call for efficient batch processing.
+                                    # `expect_search=has_qa` lets memory-system adapters (e.g. cognee)
+                                    # skip the expensive cognify/graph-extraction step for session-only
+                                    # dates whose data won't ever be queried, saving LLM cost.
                                     # Per-op tracking
                                     if self.per_op_tracker:
                                         with self.per_op_tracker.track("add") as ctx:
-                                            r = await self.adapter.add_chunks(session_chunks)
+                                            r = await self.adapter.add_chunks(
+                                                session_chunks, expect_search=has_qa,
+                                            )
                                         record = ctx.record(result_data={
                                             "date": date_str,
                                             "session_id": session_id,
@@ -266,12 +271,15 @@ class Pipeline:
                                             "num_messages": sum(len(c.messages) for c in session_chunks),
                                             "added": r.get("added", 0),
                                             "failed": r.get("failed", 0),
+                                            "expect_search": has_qa,
                                         })
                                         # Use tracker's elapsed (includes adapter call time)
                                         latency = record.elapsed_seconds
                                     else:
                                         start = time.perf_counter()
-                                        r = await self.adapter.add_chunks(session_chunks)
+                                        r = await self.adapter.add_chunks(
+                                            session_chunks, expect_search=has_qa,
+                                        )
                                         latency = time.perf_counter() - start
 
                                     total_messages = sum(len(c.messages) for c in session_chunks)

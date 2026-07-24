@@ -1,43 +1,122 @@
 # Cognee System Configuration
+#
+# In-process cognee SDK adapter — no Docker required.
+# Mirrors the cognee BEAM eval-framework flow:
+#   add(corpus) -> cognify() -> cognee.search(GRAPH_COMPLETION, datasets=[user])
 
 name: "cognee"
-version: "1.0"
-description: "Cognee - AI memory platform with knowledge graph"
+version: "2.0"
+description: "Cognee - AI memory platform with knowledge graph (in-process SDK, BEAM-equivalent flow)"
 
 adapter: "cognee"
-
 builder: "cognee"
 
-# Builder configuration (used by builder to start memory system)
-docker_compose: "systems/cognee/docker-compose.yml"
-docker_wait: 180
-
-# Optional services (requires corresponding docker profile)
-enable_neo4j: true   # Enable Neo4j graph database (profile: neo4j)
-enable_redis: true    # Enable Redis caching (profile: redis)
-
-api_key: null
-batch_size: 5
-max_retries: 5
-max_content_length: 8000
-add_interval: 0.5
-num_workers: 10
-post_add_wait_seconds: 180
-max_concurrent: 3
-
+# =============================================================================
+# LLM (single source of truth for all cognee API calls)
+# =============================================================================
+# `cognee.add` / `cognee.cognify` / `cognee.search` / `...generate_completion`
+# ALL read the LLM model from `os.environ` and cognee's global LLMConfig. The
+# adapter does NOT construct or pass any per-call LLMConfig — keeping search,
+# add, and answer on one consistent configuration.
+#
+# The builder exports the values below as OS env vars (LLM_PROVIDER / LLM_MODEL
+# / LLM_API_KEY / LLM_ENDPOINT) before any cognee call.
+#
+# `provider: "default"` is a sentinel that short-circuits the cognee litellm /
+# instructor path and routes LLM calls through our custom
+# cognee/infrastructure/llm/.../deepseek/adapter.py — direct OpenAI-compatible
+# HTTP using aiohttp, with native `response_format: json_schema` and
+# auto-injected `extra_body: {thinking: {type: disabled}}` for reasoning models.
+#
+# Set `provider: "openai"` to fall back to the original cognee path.
 llm:
-  provider: "openai"
+  provider: "default"
   model: "${LLM_MODEL:deepseek-v4-flash}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
   temperature: 0
   max_tokens: 32768
 
-search:
-  top_k: 40
-  search_interval: 0.05
-  search_type: "CHUNKS"  # CHUNKS=vector similarity with scores, GRAPH_COMPLETION=LLM generation
+# =============================================================================
+# Embedding (SiliconFlow Vectorize via openai_compatible)
+# =============================================================================
+# Builder exports these as OS env vars (EMBEDDING_PROVIDER / EMBEDDING_MODEL /
+# EMBEDDING_API_KEY / EMBEDDING_ENDPOINT / EMBEDDING_DIMENSIONS). Same
+# single-source-of-truth pattern as `llm` — no per-call override.
+embedding:
+  provider: "openai_compatible"
+  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
+  api_key: "${VECTORIZE_API_KEY}"
+  base_url: "${VECTORIZE_BASE_URL:https://api.siliconflow.cn/v1}"
+  dimensions: 1024
 
-answer:
-  temperature: 0
-  max_retries: 3
+# =============================================================================
+# Cognee storage paths (file-based: SQLite + LanceDB + Ladybug)
+# =============================================================================
+# Relative paths are resolved against the harness cwd. Override these to point
+# at a project-local cache so re-runs pick up where they left off.
+data_root_directory: ".cognee/data"
+system_root_directory: ".cognee/system"
+
+# =============================================================================
+# Adapter knobs (consumed by CogneeAdapter)
+# =============================================================================
+# Per-user cognee dataset namespace: final name = f"{prefix}{conversation_id}".
+# (prune_on_init lives under "Builder knobs" below — it's a lifecycle hook
+# that runs once at builder.build(), not per-adapter-call.)
+dataset_prefix: "locomo_"
+
+# Default top_k passed to cognee.search.
+top_k: 10
+
+# Cognee SearchType. One of:
+#   graph_completion                       (default)
+#   graph_completion_cot
+#   graph_completion_context_extension
+#   graph_summary_completion
+retriever_type: "graph_completion"
+
+# cognee prompt filename (relative to cognee's prompt directory).
+system_prompt_path: "answer_simple_question.txt"
+
+# Wide-search candidate pool size passed to cognee.search.
+wide_search_top_k: 100
+
+# Cognee chunker token budget for cognify.
+chunk_size: 1024
+
+# =============================================================================
+# Builder knobs (consumed by CogneeBuilder)
+# =============================================================================
+# Multi-tenant access control. False (default) matches BEAM's posture — keeps
+# per-dataset isolation without strict auth. Enable only if your environment
+# requires full per-user backend isolation.
+enable_backend_access_control: false
+
+# Cognee's structured-output framework for entity extraction. "instructor"
+# supports OpenAI / Azure / Anthropic / Gemini / Ollama / Bedrock / BAML.
+structured_output_framework: "instructor"
+
+# Wipe cognee state at the start of every eval run. Owned by the builder, not
+# the adapter. Matches BEAM eval's per-run reset semantics:
+#   await cognee.prune.prune_data()
+#   await cognee.prune.prune_system(metadata=True)
+# This wipes raw data, graph, vector store, and (with metadata=True) the
+# relational metadata tables too. Use True for repeatable benchmark runs;
+# leave False if you want to incrementally accumulate across runs.
+prune_on_init: false
+
+# =============================================================================
+# Out-of-scope (recorded here only as comments — these knobs are NOT honored)
+# =============================================================================
+# `rerank` block — cognee eval_framework has no rerank model; ignored with a
+# warning if set in this YAML. The Vectorize provider's native rerank is not
+# wired into cognee's graph-completion path.
+#
+# `docker_compose` / `docker_wait` / `enable_neo4j` / `enable_redis` — old
+# Docker-builder knobs, dropped in v2. Cognee now runs in-process.
+#
+# `llm_instructor_mode` and `llm_args` were workarounds for DeepSeek-style
+# reasoning models fighting cognee's default litellm/instructor path. Now
+# obsolete — set `llm.provider: "default"` to use our custom DeepSeek adapter
+# (see the `llm:` block above) which handles structured output natively.

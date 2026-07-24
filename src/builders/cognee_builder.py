@@ -1,13 +1,33 @@
 """
-Cognee builder - starts Cognee Docker container via docker compose.
-"""
+Cognee builder — prepares environment for in-process cognee SDK usage.
 
+No Docker required. Mirrors the `hindsight_builder.py` pattern at the surface
+level (build/cleanup lifecycle), but strips away anything that mediates state
+between builder and adapter.
+
+Responsibilities kept here:
+    1. Set OS env vars (LLM_API_KEY, EMBEDDING_*, ENABLE_BACKEND_ACCESS_CONTROL,
+       DATA_ROOT_DIRECTORY, ...) BEFORE the cognee module is touched. cognee's
+       own __init__.py calls `dotenv.load_dotenv(override=True)`, which would
+       otherwise clobber our env. Setting them in build() — which runs before
+       the adapter is invoked — buys us a deterministic baseline.
+    2. Pre-import cognee to surface import-time errors (e.g. missing dependency)
+       before the eval run starts. Also forces DB migrations to be discovered
+       early.
+
+Responsibilities deliberately NOT here:
+    - Building `LLMConfig` / `EmbeddingConfig` instances and stashing them on
+      `self.config`. Those are lightweight pydantic-settings objects with no
+      resources to share; the adapter constructs them itself from the same
+      config dict. (See `CogneeAdapter._build_llm_config`.)
+
+Reference: LifeBench_eval/systems/cognee/cognee/eval_framework/...
+"""
 import logging
 import os
-import subprocess
-import time
+import re
+from typing import Any, Dict, Optional
 from pathlib import Path
-from typing import Optional
 
 from src.builders.base_builder import BaseBuilder
 from src.builders.registry import register_builder
@@ -15,435 +35,256 @@ from src.builders.registry import register_builder
 logger = logging.getLogger(__name__)
 
 
-def _load_env_config(project_env: Path) -> dict:
-    """Load configuration from project .env file.
+def _absolutize_path(value: str, project_root: Optional[str]) -> str:
+    """Resolve relative paths to absolute against `project_root`.
 
-    Args:
-        project_env: Path to LifeBench_eval/.env
+    cognee's BaseConfig validates `data_root_directory` and
+    `system_root_directory` as absolute paths. YAML configs typically
+    express them as relative (`.cognee/data`), which Windows rejects as
+    "Got relative path". We absolutize here so the values written into
+    os.environ by the builder pass cognee's validation regardless of OS.
 
-    Returns:
-        Dict with LLM and embedding configuration
+    S3 URLs, already-absolute paths, and non-string inputs pass through
+    unchanged.
     """
-    config = {}
-    if project_env.exists():
-        with open(project_env, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key, value)
+    if not isinstance(value, str) or not value:
+        return value
+    if value.startswith(("s3://", "gs://", "http://", "https://")):
+        return value
+    p = Path(value).expanduser()
+    if p.is_absolute():
+        return str(p)
+    base = Path(project_root).expanduser() if project_root else Path.cwd()
+    return str((base / p).resolve())
 
-    config["llm_api_key"] = os.environ.get("LLM_API_KEY", "")
-    config["llm_base_url"] = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
-    config["llm_model"] = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
-    config["llm_provider"] = os.environ.get("LLM_PROVIDER", "openai")
 
-    # Embedding config
-    config["embedding_api_key"] = os.environ.get("VECTORIZE_API_KEY", os.environ.get("LLM_API_KEY", ""))
-    config["embedding_base_url"] = os.environ.get("VECTORIZE_BASE_URL", "https://api.siliconflow.cn/v1")
-    config["embedding_model"] = os.environ.get("VECTORIZE_MODEL", "Qwen/Qwen3-Embedding-4B")
-    config["embedding_dimensions"] = os.environ.get("VECTORIZE_DIMENSIONS", "1024")
-    config["embedding_timeout"] = os.environ.get("VECTORIZE_TIMEOUT", "60")
-    config["embedding_max_retries"] = os.environ.get("VECTORIZE_MAX_RETRIES", "3")
-    config["embedding_batch_size"] = os.environ.get("VECTORIZE_BATCH_SIZE", "10")
-    config["embedding_max_concurrent"] = os.environ.get("VECTORIZE_MAX_CONCURRENT", "3")
-    config["embedding_encoding_format"] = os.environ.get("VECTORIZE_ENCODING_FORMAT", "float")
+def _resolve_env_var(value: Any) -> Any:
+    """Resolve ${VAR:default} style env-var references (mirrors hindsight_builder)."""
+    if not isinstance(value, str):
+        return value
+    pattern = r'\$\{([^}:]+)(?::([^}]*))?}'
 
-    # Rerank config (optional)
-    config["rerank_api_key"] = os.environ.get("RERANK_API_KEY", os.environ.get("VECTORIZE_API_KEY", ""))
-    config["rerank_base_url"] = os.environ.get("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")
-    config["rerank_model"] = os.environ.get("RERANK_MODEL", "Qwen/Qwen3-Reranker-4B")
-    config["rerank_timeout"] = os.environ.get("RERANK_TIMEOUT", "30")
-    config["rerank_max_retries"] = os.environ.get("RERANK_MAX_RETRIES", "3")
-    config["rerank_batch_size"] = os.environ.get("RERANK_BATCH_SIZE", "10")
-    config["rerank_max_concurrent"] = os.environ.get("RERANK_MAX_CONCURRENT", "5")
+    def replacer(match):
+        var_name = match.group(1)
+        default = match.group(2) or ""
+        return os.environ.get(var_name, default)
 
-    # Environment & Logging
-    config["log_level"] = os.environ.get("LOG_LEVEL", "INFO")
-    config["env"] = os.environ.get("ENV", "local")
-
-    return config
+    return re.sub(pattern, replacer, value)
 
 
 @register_builder("cognee")
 class CogneeBuilder(BaseBuilder):
-    """Cognee builder that starts/stops Cognee Docker via docker compose.
+    """In-process cognee SDK builder.
 
-    Configuration:
-        docker_compose: Path to docker-compose.yaml (relative to project root)
-        docker_wait: Seconds to wait after starting services (default 60)
-        enable_neo4j: Enable Neo4j graph database (default False)
-        enable_redis: Enable Redis caching (default False)
+    Configuration (all optional — fall back to cognee's defaults / .env values):
+        llm:                    dict with provider, model, api_key, base_url,
+                                temperature, max_tokens — used as answer-LLM.
+                                Also exported as OS env vars for any cognee
+                                call site that doesn't go through our adapter.
+        memory_llm:             dict (same shape) used during cognify for
+                                entity extraction / summarization.
+        embedding:              dict with provider, model, api_key, base_url,
+                                dimensions, batch_size, huggingface_tokenizer.
+        rerank:                 dict — logged but ignored (cognee has no
+                                rerank in its eval_framework).
+        data_root_directory:    cognee data path (DATA_ROOT_DIRECTORY env var).
+        system_root_directory:  cognee system path (SYSTEM_ROOT_DIRECTORY).
+        enable_backend_access_control: bool (default False — matches BEAM).
+        structured_output_framework: str (default "instructor").
 
-    Complete Environment Configuration:
-        - LLM: DeepSeek via OpenAI-compatible API
-        - Embedding: SiliconFlow Vectorize (Qwen/Qwen3-Embedding-4B)
-        - Rerank: SiliconFlow (Qwen/Qwen3-Reranker-4B)
-        - Vector DB: pgvector (PostgreSQL)
-        - Graph DB: PostgreSQL (or Neo4j if enabled)
-        - Cache: Redis (if enabled)
+    Side effects on success:
+        Sets OS env vars for the keys above so cognee's pydantic-settings
+        can find them at import or first-call time.
+        Tries `import cognee`; logs and proceeds on failure (the adapter
+        will also fail loudly when actually used, but the build step is
+        not blocked).
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
-        self.docker_compose = config.get("docker_compose")
-        self.docker_wait = config.get("docker_wait", 60)
-        self.enable_neo4j = config.get("enable_neo4j", False)
-        self.enable_redis = config.get("enable_redis", False)
         self._started = False
+        self._cognee_imported = False
+
+    # ----- BaseBuilder contract ------------------------------------------------
 
     async def build(self) -> bool:
-        """
-        Start Cognee Docker services via docker compose.
-
-        Returns:
-            True if successful or already running, False on failure
-        """
         if self._started:
             logger.info("Cognee builder already started")
             return True
 
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
-        if not project_root:
-            logger.error("Cannot determine project root")
-            return False
+        env_mappings = self._build_env_mappings()
+        self._apply_env(env_mappings)
 
-        # 1. Prepare .env file
-        if not await self._prepare_env_file(project_root):
-            logger.error("Failed to prepare .env file")
-            return False
-
-        # 2. Start docker services
-        if self.docker_compose:
-            if not await self._start_docker(project_root):
-                return False
-
-            # Wait for services to be ready
-            logger.info(f"Waiting {self.docker_wait}s for services to be ready...")
-            time.sleep(self.docker_wait)
-
-            # 3. Wait for API to be healthy
-            if not await self._wait_for_api():
-                return False
+        # Pre-import cognee so import-time errors surface before the eval run.
+        # Note: cognee's __init__.py calls dotenv.load_dotenv(override=True)
+        # which would overwrite the env vars we just set if there is a .env
+        # file in cwd. We accept that — the adapter passes per-call
+        # llm_config/embedding_config overrides so its behavior does not
+        # depend on the post-dotenv state.
+        # Lifecycle step — wipe cognee state if explicitly requested.
+        # Lives in the builder (not the adapter) because it's a run-level
+        # concern, not a per-call concern. Matches BEAM's pre-run reset:
+        #   cognee.prune.prune_data() + cognee.prune.prune_system(metadata=True)
+        if self.config.get("prune_on_init", False):
+            await self._prune_state()
 
         self._started = True
-        logger.info("Cognee builder completed successfully")
+        logger.info(
+            "Cognee builder completed (in-process mode, no Docker). "
+            "cognee_available=%s, prune_on_init=%s",
+            self._cognee_imported,
+            self.config.get("prune_on_init", False),
+        )
         return True
 
+    async def _prune_state(self) -> None:
+        """Wipe cognee's graph + vector + raw data + metadata tables.
+
+        Mirrors cognee's eval_framework/corpus_builder_executor.py:59-60 pattern:
+            await cognee.prune.prune_data()
+            await cognee.prune.prune_system(metadata=True)
+        Failure here is logged but does not abort `build()` — the adapter can
+        still run on top of any partially-cleaned or pre-existing state.
+        """
+        try:
+            import cognee
+            from cognee.api.v1.prune import prune as cognee_prune
+            await cognee_prune.prune_data()
+            await cognee_prune.prune_system(metadata=True)
+            logger.info("  cognee state wiped via prune_data + prune_system(metadata=True)")
+        except Exception as exc:
+            logger.error(
+                "cognee prune failed: %s — adapter will run on whatever state "
+                "cognee is currently in", exc, exc_info=True,
+            )
+
     async def cleanup(self) -> bool:
-        """
-        Stop Cognee Docker services via docker compose.
-
-        Returns:
-            True if successful
-        """
         if not self._started:
-            logger.info("Cognee builder not started, nothing to cleanup")
             return True
+        self._started = False
+        self._cognee_imported = False
+        logger.info("Cognee builder cleanup completed")
+        return True
 
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
-        if not project_root or not self.docker_compose:
-            return True
-
-        compose_path = project_root / self.docker_compose
-        if not compose_path.exists():
-            logger.warning(f"Docker compose file not found: {compose_path}")
-            return True
-
-        try:
-            logger.info(f"Stopping docker services: {self.docker_compose}")
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "down", "--remove-orphans"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f"Docker stop failed: {result.stderr}")
-                return False
-            logger.info("Docker services stopped")
-            self._started = False
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop docker services: {e}")
-            return False
-
-    def _get_project_root(self) -> Optional[Path]:
-        """Get project root from project_root config or cli.py location."""
-        if self.project_root:
-            return Path(self.project_root)
-        cli_path = Path(__file__).parent.parent.parent / "cli.py"
-        if cli_path.exists():
-            return cli_path.parent.resolve()
-        return None
-
-    async def _prepare_env_file(self, project_root: Path) -> bool:
-        """Prepare .env file for Cognee Docker."""
-        compose_path = project_root / self.docker_compose
-        env_path = compose_path.parent / ".env"
-
-        # Load config from LifeBench_eval/.env
-        project_env = project_root / ".env"
-        env_config = _load_env_config(project_env)
-
-        # Build LLM_ARGS to disable DeepSeek thinking mode
-        llm_args_json = '{"extra_body": {"thinking": {"type": "disabled"}}}'
-
-        env_content = f"""# Cognee Server Environment Configuration
-# Generated by CogneeBuilder from LifeBench_eval/.env
-
-# =================== LLM Config ===================
-LLM_API_KEY={env_config['llm_api_key']}
-# Use deepseek-v4-flash with thinking mode disabled via extra_body
-LLM_MODEL=openai/{env_config['llm_model']}
-# Use openai provider with custom endpoint for DeepSeek (OpenAI-compatible API)
-LLM_PROVIDER={env_config['llm_provider']}
-# LLM_ENDPOINT maps to llm_endpoint in config
-LLM_ENDPOINT={env_config['llm_base_url']}
-# Disable DeepSeek thinking mode to avoid tool_choice incompatibility
-LLM_ARGS={llm_args_json}
-
-# =================== Embedding Config (SiliconFlow Vectorize) ===================
-# Use openai_compatible provider for SiliconFlow (uses openai SDK directly)
-EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_MODEL={env_config['embedding_model']}
-EMBEDDING_DIMENSIONS={env_config['embedding_dimensions']}
-EMBEDDING_API_KEY={env_config['embedding_api_key']}
-EMBEDDING_ENDPOINT={env_config['embedding_base_url']}
-# Complete Vectorize parameters
-VECTORIZE_TIMEOUT={env_config['embedding_timeout']}
-VECTORIZE_MAX_RETRIES={env_config['embedding_max_retries']}
-VECTORIZE_BATCH_SIZE={env_config['embedding_batch_size']}
-VECTORIZE_MAX_CONCURRENT={env_config['embedding_max_concurrent']}
-VECTORIZE_ENCODING_FORMAT={env_config['embedding_encoding_format']}
-
-# =================== Rerank Config (SiliconFlow) ===================
-RERANK_PROVIDER=siliconflow
-RERANK_API_KEY={env_config['rerank_api_key']}
-RERANK_BASE_URL={env_config['rerank_base_url']}
-RERANK_MODEL={env_config['rerank_model']}
-# Complete Rerank parameters
-RERANK_TIMEOUT={env_config['rerank_timeout']}
-RERANK_MAX_RETRIES={env_config['rerank_max_retries']}
-RERANK_BATCH_SIZE={env_config['rerank_batch_size']}
-RERANK_MAX_CONCURRENT={env_config['rerank_max_concurrent']}
-
-# =================== Database Config (PostgreSQL) ===================
-DB_PROVIDER=postgres
-DB_HOST=postgres
-DB_PORT=5432
-DB_USERNAME=cognee
-DB_PASSWORD=cognee
-DB_NAME=cognee_db
-
-# =================== Vector DB (pgvector) ===================
-VECTOR_DB_PROVIDER=pgvector
-
-# =================== Graph DB ===================
-GRAPH_DATABASE_PROVIDER=postgres
-
-# =================== Storage ===================
-SYSTEM_ROOT_DIRECTORY=/app/data/.cognee_system
-DATA_ROOT_DIRECTORY=/app/data/.cognee_data
-
-# =================== API Config ===================
-ENV={env_config['env']}
-LOG_LEVEL={env_config['log_level']}
-CORS_ALLOWED_ORIGINS=*
-
-# Disable multi-user auth for local testing
-ENABLE_BACKEND_ACCESS_CONTROL=false
-
-# Skip LLM connection test (for testing with external APIs)
-COGNEE_SKIP_CONNECTION_TEST=true
-"""
-        try:
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(env_content)
-            logger.info(f"Created .env file: {env_path}")
-            logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
-            logger.info(f"  Embedding: {env_config['embedding_model']} ({env_config['embedding_dimensions']} dims, batch={env_config['embedding_batch_size']}, timeout={env_config['embedding_timeout']}s) @ {env_config['embedding_base_url']}")
-            logger.info(f"  Rerank: {env_config['rerank_model']} (timeout={env_config['rerank_timeout']}s, batch={env_config['rerank_batch_size']}) @ {env_config['rerank_base_url']}")
-            logger.info(f"  Log Level: {env_config['log_level']}, Env: {env_config['env']}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to create .env file: {e}")
-            return False
-
-    async def _start_docker(self, project_root: Path) -> bool:
-        """Start docker compose services."""
-        compose_path = project_root / self.docker_compose
-        if not compose_path.exists():
-            logger.error(f"Docker compose file not found: {compose_path}")
-            return False
-
-        try:
-            # Start postgres first (always needed)
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "postgres"],
-                capture_output=True,
-                text=True,
-            )
-            if "Up" not in result.stdout:
-                logger.info(f"Starting postgres: {self.docker_compose}")
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "postgres"],
-                    cwd=str(compose_path.parent),
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    logger.error(f"Docker start postgres failed: {result.stderr}")
-                    return False
-
-                # Wait for postgres to be ready
-                if not await self._wait_for_postgres(project_root):
-                    logger.error("Postgres did not become ready in time")
-                    return False
-            else:
-                logger.info("Postgres already running")
-
-            # Optionally start Neo4j graph database
-            if self.enable_neo4j:
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "ps", "neo4j"],
-                    capture_output=True,
-                    text=True,
-                )
-                if "Up" not in result.stdout:
-                    logger.info(f"Starting neo4j: {self.docker_compose}")
-                    result = subprocess.run(
-                        ["docker", "compose", "-f", str(compose_path), "up", "-d", "neo4j"],
-                        cwd=str(compose_path.parent),
-                        capture_output=True,
-                        text=True,
-                    )
-                    if result.returncode != 0:
-                        logger.error(f"Docker start neo4j failed: {result.stderr}")
-                        return False
-                else:
-                    logger.info("Neo4j already running")
-
-            # Optionally start Redis cache
-            if self.enable_redis:
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "ps", "redis"],
-                    capture_output=True,
-                    text=True,
-                )
-                if "Up" not in result.stdout:
-                    logger.info(f"Starting redis: {self.docker_compose}")
-                    result = subprocess.run(
-                        ["docker", "compose", "-f", str(compose_path), "up", "-d", "redis"],
-                        cwd=str(compose_path.parent),
-                        capture_output=True,
-                        text=True,
-                    )
-                    if result.returncode != 0:
-                        logger.error(f"Docker start redis failed: {result.stderr}")
-                        return False
-                else:
-                    logger.info("Redis already running")
-
-            # Start cognee (always needed)
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "cognee"],
-                capture_output=True,
-                text=True,
-            )
-            if "Up" not in result.stdout:
-                logger.info(f"Starting cognee: {self.docker_compose}")
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "cognee"],
-                    cwd=str(compose_path.parent),
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    logger.error(f"Docker start cognee failed: {result.stderr}")
-                    return False
-            else:
-                logger.info("Cognee already running")
-
-            logger.info("Docker services ready")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start docker services: {e}")
-            return False
-
-    async def _wait_for_postgres(self, project_root: Path) -> bool:
-        """Wait for postgres container to be healthy."""
-        import urllib.request
-        import urllib.error
-
-        max_retries = 90  # 90 * 2s = 180s
-        for attempt in range(max_retries):
-            try:
-                # Check postgres health via docker inspect
-                result = subprocess.run(
-                    ["docker", "inspect", "-f", "{{.State.Health.Status}}", "postgres"],
-                    capture_output=True,
-                    text=True,
-                )
-                health_status = result.stdout.strip()
-                if health_status == "healthy":
-                    logger.info("Postgres is healthy")
-                    return True
-                logger.debug(f"Postgres status: {health_status}, attempt {attempt + 1}/{max_retries}")
-            except Exception as e:
-                logger.debug(f"Postgres check attempt {attempt + 1}/{max_retries}: {e}")
-
-            if attempt < max_retries - 1:
-                time.sleep(2)
-
-        logger.error("Postgres did not become healthy in 180s")
-        return False
-
-    async def _wait_for_api(self) -> bool:
-        """Wait for Cognee API and container to be healthy."""
-        import urllib.request
-        import urllib.error
-
-        max_retries = 96  # 96 * 5s = 480s
-        for attempt in range(max_retries):
-            try:
-                # Check container health first
-                result = subprocess.run(
-                    ["docker", "inspect", "-f", "{{.State.Health.Status}}", "cognee"],
-                    capture_output=True,
-                    text=True,
-                )
-                container_health = result.stdout.strip()
-
-                # Check API health
-                url = "http://localhost:8000/health"
-                req = urllib.request.Request(url, method="GET")
-                response = urllib.request.urlopen(req, timeout=5)
-                if response.status == 200 and container_health == "healthy":
-                    result_text = response.read().decode()
-                    logger.info(f"Cognee API is ready: {result_text}")
-                    return True
-            except urllib.error.HTTPError as e:
-                if e.code == 200:
-                    logger.info(f"Cognee API is ready (attempt {attempt + 1})")
-                    return True
-                logger.debug(f"API responded with status {e.code}, retrying...")
-            except Exception as e:
-                logger.debug(f"Attempt {attempt + 1}/{max_retries}: waiting... container_health={container_health if 'container_health' in dir() else 'unknown'}")
-
-            if attempt < max_retries - 1:
-                time.sleep(5)
-
-        logger.error("Cognee API not ready after 480s")
-        return False
-
-    def get_status(self):
-        """Return builder status."""
+    def get_status(self) -> Dict[str, Any]:
         return {
             "name": self.__class__.__name__,
             "started": self._started,
-            "docker_compose": self.docker_compose,
-            "enable_neo4j": self.enable_neo4j,
-            "enable_redis": self.enable_redis,
+            "mode": "in_process",
+            "cognee_available": self._cognee_imported,
         }
+
+    # ----- env-var translation -------------------------------------------------
+
+    def _build_env_mappings(self) -> Dict[str, str]:
+        """Translate harness-level config dict into OS env-var mappings that
+        cognee's pydantic-settings LLMConfig / EmbeddingConfig read at import."""
+        mappings: Dict[str, str] = {}
+
+        llm_cfg = self.config.get("llm", {}) or {}
+        if llm_cfg:
+            provider = _resolve_env_var(llm_cfg.get("provider") or "openai")
+            model = _resolve_env_var(llm_cfg.get("model") or "")
+            api_key = _resolve_env_var(llm_cfg.get("api_key") or "")
+            base_url = _resolve_env_var(llm_cfg.get("base_url") or "")
+            mappings["LLM_PROVIDER"] = str(provider)
+            if model:
+                # cognee expects 'provider/model' format
+                if "/" not in model:
+                    model = f"{provider}/{model}"
+                mappings["LLM_MODEL"] = model
+            if api_key:
+                mappings["LLM_API_KEY"] = str(api_key)
+            if base_url:
+                mappings["LLM_ENDPOINT"] = str(base_url)
+            if llm_cfg.get("temperature") is not None:
+                mappings["LLM_TEMPERATURE"] = str(llm_cfg.get("temperature"))
+            if llm_cfg.get("max_tokens") is not None:
+                mappings["LLM_MAX_COMPLETION_TOKENS"] = str(llm_cfg.get("max_tokens"))
+
+        emb_cfg = self.config.get("embedding", {}) or {}
+        if emb_cfg:
+            provider = _resolve_env_var(emb_cfg.get("provider") or "openai_compatible")
+            model = _resolve_env_var(emb_cfg.get("model") or "")
+            api_key = _resolve_env_var(emb_cfg.get("api_key") or "")
+            base_url = _resolve_env_var(emb_cfg.get("base_url") or "")
+            dims = emb_cfg.get("dimensions")
+            mappings["EMBEDDING_PROVIDER"] = str(provider)
+            if model:
+                mappings["EMBEDDING_MODEL"] = str(model)
+            if api_key:
+                mappings["EMBEDDING_API_KEY"] = str(api_key)
+            if base_url:
+                mappings["EMBEDDING_ENDPOINT"] = str(base_url)
+            if dims is not None:
+                mappings["EMBEDDING_DIMENSIONS"] = str(dims)
+            tokenizer = emb_cfg.get("huggingface_tokenizer")
+            if tokenizer:
+                mappings["HUGGINGFACE_TOKENIZER"] = str(_resolve_env_var(tokenizer))
+
+        if self.config.get("rerank"):
+            logger.warning(
+                "cognee eval_framework does not implement a rerank model. "
+                "The 'rerank' config block is recorded but ignored."
+            )
+
+        data_root = self.config.get("data_root_directory")
+        if data_root:
+            # Resolve relative paths against this builder's project root so
+            # cognee's BaseConfig validation (`Path must be absolute`) passes
+            # on Windows where dotted paths like `.cognee/data` are not
+            # absolute. S3 URLs and already-absolute paths pass through
+            # untouched.
+            mappings["DATA_ROOT_DIRECTORY"] = _absolutize_path(
+                data_root, project_root=self.project_root,
+            )
+        sys_root = self.config.get("system_root_directory")
+        if sys_root:
+            mappings["SYSTEM_ROOT_DIRECTORY"] = _absolutize_path(
+                sys_root, project_root=self.project_root,
+            )
+
+        # Toggle access control off by default (BEAM posture).
+        mappings.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
+        mappings.setdefault(
+            "STRUCTURED_OUTPUT_FRAMEWORK",
+            str(self.config.get("structured_output_framework", "instructor")),
+        )
+
+        # Instructor mode and litellm extra_body knobs (`llm_instructor_mode`,
+        # `llm_args`) used to live here as workarounds for DeepSeek-style
+        # reasoning models fighting cognee's litellm/instructor path. They
+        # were removed when we switched `llm.provider` to `default` (sentinel
+        # that routes through our custom DeepSeek adapter instead). The custom
+        # adapter auto-injects `extra_body: {thinking: {type: disabled}}` and
+        # uses native `response_format: json_schema` — no env knobs needed.
+        # cf. cognee/infrastructure/llm/.../deepseek/adapter.py.
+
+        # Co-name alias bridge. The harness `.env` historically uses
+        # `LLM_BASE_URL` / `VECTORIZE_BASE_URL` / `RERANK_BASE_URL`, while
+        # cognee's LLMConfig and EmbeddingConfig read `LLM_ENDPOINT` /
+        # `EMBEDDING_ENDPOINT`. Propagate between them so cognee's pydantic-
+        # settings actually see the value when the user only set `*_BASE_URL`
+        # in `.env`. We do it here (instead of touching cli.py) so the alias
+        # bridge is contained in the cognee-specific builder.
+        llm_url = mappings.get("LLM_ENDPOINT") or os.environ.get("LLM_BASE_URL")
+        if llm_url:
+            mappings.setdefault("LLM_ENDPOINT", llm_url)
+            os.environ.setdefault("LLM_BASE_URL", llm_url)
+        emb_url = mappings.get("EMBEDDING_ENDPOINT") or os.environ.get("VECTORIZE_BASE_URL")
+        if emb_url:
+            mappings.setdefault("EMBEDDING_ENDPOINT", emb_url)
+            os.environ.setdefault("VECTORIZE_BASE_URL", emb_url)
+
+        return mappings
+
+    def _apply_env(self, mappings: Dict[str, str]) -> None:
+        for key, value in mappings.items():
+            if value in (None, ""):
+                continue
+            os.environ[key] = value
+            if "API_KEY" in key:
+                masked = value[:8] + "..." if len(value) > 8 else "***"
+                logger.info("  %s=%s", key, masked)
+            else:
+                logger.info("  %s=%s", key, value)
