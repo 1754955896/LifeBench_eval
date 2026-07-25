@@ -22,34 +22,10 @@ from src.models.search import RetrievedMemory, SearchResult
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Module-load environment patches BEFORE `import cognee` below.
-#
-# Two platform hazards block cognee from loading on Windows when this file
-# sits next to a vendored `systems/cognee/.env`:
-#
-#   1. cognee/__init__.py runs `dotenv.load_dotenv(override=True)` and reads
-#      that vendored `.env`, which carries Docker-only paths
-#      (`/app/data/.cognee_data`, `/app/data/.cognee_system`). Those values
-#      become BaseConfig fields and fail Windows absolute-path validation,
-#      raising `pydantic.ValidationError` during import — cognee ends up as
-#      None in `cognee_adapter` and `add_chunks` blows up at runtime.
-#   2. cognee's BaseConfig requires DATA/SYSTEM_ROOT_DIRECTORY to be set to
-#      absolute paths. The harness already loaded the real `.env` above the
-#      adapter import, so we just set safe defaults if missing.
-#
-# We replace `dotenv.load_dotenv` with a no-op for the rest of the process
-# so cognee's internal call becomes harmless. The harness's earlier explicit
-# `load_dotenv(project_root / ".env")` already ran before this module loaded,
-# so harness-side `.env` semantics are preserved.
-# ---------------------------------------------------------------------------
-import dotenv as _cognee_dotenv_module
-_orig_load_dotenv = _cognee_dotenv_module.load_dotenv
-_cognee_dotenv_module.load_dotenv = lambda *a, **kw: False  # noqa: E731
-
-# Provide absolute cognee storage paths. Falls back to `.cognee_data` /
-# `.cognee_system` next to the cognee submodule if cognee's defaults aren't
-# already in os.environ. create the dirs so cognee can write to them.
+# Ensure cognee has valid storage paths as a safety net in case the vendored
+# .env is missing or incomplete. Cognee's own __init__.py now loads its
+# vendored `.env` via an explicit path (Path(__file__).parents[N] / ".env"),
+# so the env-file values take priority over these defaults.
 _cognee_submodule_root = (
     Path(__file__).resolve().parents[2] / "systems" / "cognee"
 )
@@ -105,45 +81,63 @@ def _resolve_search_type(retriever_type: str):
     return getattr(SearchType, name)
 
 
+def _context_to_memories(context: Any, dataset_name: str) -> List[RetrievedMemory]:
+    """Convert a context string or list into RetrievedMemory items.
+
+    Graph context text is kept intact as a single memory — splitting it
+    line-by-line would break the structural markers (``__node_content_start__``,
+    ``__node_content_end__``, edge triples, etc.) that the LLM relies on.
+    """
+
+    def _resolve_text(ctx: Any) -> str:
+        if ctx is None:
+            return ""
+        if isinstance(ctx, str):
+            return ctx
+        if isinstance(ctx, list):
+            parts: list[str] = []
+            for entry in ctx:
+                if isinstance(entry, str):
+                    parts.append(entry)
+                elif isinstance(entry, dict):
+                    parts.append(str(entry.get("text") or entry.get("content") or entry))
+                else:
+                    parts.append(str(entry))
+            return "\n".join(parts)
+        return str(ctx)
+
+    text = _resolve_text(context).strip()
+    if not text:
+        return []
+
+    return [
+        RetrievedMemory(
+            content=text,
+            score=1.0,
+            metadata={"dataset": dataset_name},
+        )
+    ]
+
+
 def _payload_to_memories(payload: Any, dataset_name: str) -> List[RetrievedMemory]:
-    """Convert a cognee SearchResultPayload.context into RetrievedMemory items."""
+    """Convert a cognee SearchResultPayload into RetrievedMemory items.
+
+    Handles both:
+      - SearchResultPayload objects (access-control enabled: ``payload.context``)
+      - Raw context strings (access-control disabled: the string *is* the context)
+    """
     if payload is None:
         return []
+
+    # Raw string — access-control-disabled path returns context directly
+    if isinstance(payload, str):
+        return _context_to_memories(payload, dataset_name)
 
     context = getattr(payload, "context", None)
     if context is None:
         return []
 
-    items: List[str]
-    if isinstance(context, str):
-        lines = [line.strip() for line in context.splitlines() if line.strip()]
-        items = lines if lines else [context]
-    elif isinstance(context, list):
-        items = []
-        for entry in context:
-            if isinstance(entry, str):
-                items.append(entry)
-            elif isinstance(entry, dict):
-                txt = entry.get("text") or entry.get("content") or str(entry)
-                items.append(str(txt))
-            else:
-                items.append(str(entry))
-    else:
-        items = [str(context)]
-
-    memories: List[RetrievedMemory] = []
-    total = len(items)
-    for idx, content in enumerate(items):
-        # Higher-ranked items get higher pseudo-scores (1.0 -> 0.0 linearly).
-        score = 1.0 - (idx / max(total, 1))
-        memories.append(
-            RetrievedMemory(
-                content=content,
-                score=score,
-                metadata={"dataset": dataset_name},
-            )
-        )
-    return memories
+    return _context_to_memories(context, dataset_name)
 
 
 def _format_timestamp(ts: Any) -> str:
@@ -244,6 +238,7 @@ class CogneeAdapter(BaseAdapter):
         )
         self.wide_search_top_k: int = config.get("wide_search_top_k", 100)
         self.chunk_size: int = config.get("chunk_size", 1024)
+        self.neighborhood_depth: int = config.get("neighborhood_depth", 1)
 
         self.search_type = _resolve_search_type(self.retriever_type)
 
@@ -364,6 +359,7 @@ class CogneeAdapter(BaseAdapter):
                 system_prompt_path=self.system_prompt_path,
                 top_k=top_k,
                 wide_search_top_k=self.wide_search_top_k,
+                neighborhood_depth=self.neighborhood_depth,
                 only_context=True,  # retrieve, don't LLM-complete yet
             )
         except Exception as exc:
@@ -375,6 +371,18 @@ class CogneeAdapter(BaseAdapter):
         memories: List[RetrievedMemory] = []
         dataset_seen = ds
         for r in results or []:
+            # When ENABLE_BACKEND_ACCESS_CONTROL=false, cognee returns the
+            # context string directly (not a SearchResult wrapper).
+            if isinstance(r, str):
+                memories.extend(_payload_to_memories(r, ds))
+                continue
+            # dict form (access-control enabled, non-verbose)
+            if isinstance(r, dict):
+                payload = r.get("search_result")
+                dataset_seen = r.get("dataset_name", ds)
+                memories.extend(_payload_to_memories(payload, dataset_seen))
+                continue
+            # SearchResult object form
             payload = getattr(r, "search_result", None)
             dataset_seen = getattr(r, "dataset_name", None) or ds
             memories.extend(_payload_to_memories(payload, dataset_seen))
@@ -468,6 +476,7 @@ class CogneeAdapter(BaseAdapter):
                 system_prompt_path=self.system_prompt_path,
                 top_k=top_k,
                 wide_search_top_k=self.wide_search_top_k,
+                neighborhood_depth=self.neighborhood_depth,
                 only_context=False,
             )
         except Exception as exc:
@@ -481,6 +490,16 @@ class CogneeAdapter(BaseAdapter):
             return context or ""
 
         for r in results or []:
+            # When ENABLE_BACKEND_ACCESS_CONTROL=false, results are raw
+            # completion strings (not wrapped in SearchResult / payload).
+            if isinstance(r, str) and r.strip():
+                return r
+            # dict form (access-control enabled)
+            if isinstance(r, dict):
+                completion = r.get("search_result") or r.get("text_result")
+                if isinstance(completion, str) and completion.strip():
+                    return completion
+                continue
             payload = getattr(r, "search_result", None)
             if payload is None:
                 continue

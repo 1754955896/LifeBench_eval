@@ -14,28 +14,17 @@ builder: "cognee"
 # =============================================================================
 # LLM (single source of truth for all cognee API calls)
 # =============================================================================
-# `cognee.add` / `cognee.cognify` / `cognee.search` / `...generate_completion`
-# ALL read the LLM model from `os.environ` and cognee's global LLMConfig. The
-# adapter does NOT construct or pass any per-call LLMConfig — keeping search,
-# add, and answer on one consistent configuration.
-#
-# The builder exports the values below as OS env vars (LLM_PROVIDER / LLM_MODEL
-# / LLM_API_KEY / LLM_ENDPOINT) before any cognee call.
-#
-# `provider: "default"` is a sentinel that short-circuits the cognee litellm /
-# instructor path and routes LLM calls through our custom
-# cognee/infrastructure/llm/.../deepseek/adapter.py — direct OpenAI-compatible
-# HTTP using aiohttp, with native `response_format: json_schema` and
-# auto-injected `extra_body: {thinking: {type: disabled}}` for reasoning models.
-#
-# Set `provider: "openai"` to fall back to the original cognee path.
+# Uses cognee's standard litellm/instructor path with OpenAI-compatible API.
+# DeepSeek accepts OpenAI-style requests at its /chat/completions endpoint.
+# `llm_args` disables DeepSeek's reasoning/thinking mode for structured output.
 llm:
-  provider: "default"
+  provider: "openai"
   model: "${LLM_MODEL:deepseek-v4-flash}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
-  temperature: 0
+  temperature: 0.3
   max_tokens: 32768
+  llm_args: {"extra_body": {"thinking": {"type": "disabled"}}}
 
 # =============================================================================
 # Embedding (SiliconFlow Vectorize via openai_compatible)
@@ -67,7 +56,7 @@ system_root_directory: ".cognee/system"
 dataset_prefix: "locomo_"
 
 # Default top_k passed to cognee.search.
-top_k: 10
+top_k: 40
 
 # Cognee SearchType. One of:
 #   graph_completion                       (default)
@@ -81,6 +70,9 @@ system_prompt_path: "answer_simple_question.txt"
 
 # Wide-search candidate pool size passed to cognee.search.
 wide_search_top_k: 100
+
+# Graph neighborhood expansion depth for search (0 = disabled).
+neighborhood_depth: 1
 
 # Cognee chunker token budget for cognify.
 chunk_size: 1024

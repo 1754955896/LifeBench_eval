@@ -1,28 +1,12 @@
 """
-Cognee builder — prepares environment for in-process cognee SDK usage.
+Cognee builder — writes harness config into the vendored cognee .env file.
 
-No Docker required. Mirrors the `hindsight_builder.py` pattern at the surface
-level (build/cleanup lifecycle), but strips away anything that mediates state
-between builder and adapter.
-
-Responsibilities kept here:
-    1. Set OS env vars (LLM_API_KEY, EMBEDDING_*, ENABLE_BACKEND_ACCESS_CONTROL,
-       DATA_ROOT_DIRECTORY, ...) BEFORE the cognee module is touched. cognee's
-       own __init__.py calls `dotenv.load_dotenv(override=True)`, which would
-       otherwise clobber our env. Setting them in build() — which runs before
-       the adapter is invoked — buys us a deterministic baseline.
-    2. Pre-import cognee to surface import-time errors (e.g. missing dependency)
-       before the eval run starts. Also forces DB migrations to be discovered
-       early.
-
-Responsibilities deliberately NOT here:
-    - Building `LLMConfig` / `EmbeddingConfig` instances and stashing them on
-      `self.config`. Those are lightweight pydantic-settings objects with no
-      resources to share; the adapter constructs them itself from the same
-      config dict. (See `CogneeAdapter._build_llm_config`.)
-
-Reference: LifeBench_eval/systems/cognee/cognee/eval_framework/...
+Cognee's __init__.py now loads `.env` from its own package directory via an
+explicit `dotenv_path=`. This builder prepares that file before the adapter
+imports cognee, so cognee always sees the correct configuration regardless
+of CWD — no OS env var injection or dotenv monkey-patching needed.
 """
+
 import logging
 import os
 import re
@@ -35,18 +19,12 @@ from src.builders.registry import register_builder
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
 def _absolutize_path(value: str, project_root: Optional[str]) -> str:
-    """Resolve relative paths to absolute against `project_root`.
-
-    cognee's BaseConfig validates `data_root_directory` and
-    `system_root_directory` as absolute paths. YAML configs typically
-    express them as relative (`.cognee/data`), which Windows rejects as
-    "Got relative path". We absolutize here so the values written into
-    os.environ by the builder pass cognee's validation regardless of OS.
-
-    S3 URLs, already-absolute paths, and non-string inputs pass through
-    unchanged.
-    """
+    """Resolve relative paths to absolute — cognee's BaseConfig rejects them."""
     if not isinstance(value, str) or not value:
         return value
     if value.startswith(("s3://", "gs://", "http://", "https://")):
@@ -59,10 +37,10 @@ def _absolutize_path(value: str, project_root: Optional[str]) -> str:
 
 
 def _resolve_env_var(value: Any) -> Any:
-    """Resolve ${VAR:default} style env-var references (mirrors hindsight_builder)."""
+    """Resolve ${VAR:default} style env-var references."""
     if not isinstance(value, str):
         return value
-    pattern = r'\$\{([^}:]+)(?::([^}]*))?}'
+    pattern = r'\$\{([^}:]+)(?::([^}]*))?\}'
 
     def replacer(match):
         var_name = match.group(1)
@@ -72,97 +50,64 @@ def _resolve_env_var(value: Any) -> Any:
     return re.sub(pattern, replacer, value)
 
 
+def _mask_value(key: str, value: str) -> str:
+    """Mask API keys for logging."""
+    if "API_KEY" in key:
+        return value[:8] + "..." if len(value) > 8 else "***"
+    return value
+
+
+# ---------------------------------------------------------------------------
+# builder
+# ---------------------------------------------------------------------------
+
 @register_builder("cognee")
 class CogneeBuilder(BaseBuilder):
     """In-process cognee SDK builder.
 
-    Configuration (all optional — fall back to cognee's defaults / .env values):
-        llm:                    dict with provider, model, api_key, base_url,
-                                temperature, max_tokens — used as answer-LLM.
-                                Also exported as OS env vars for any cognee
-                                call site that doesn't go through our adapter.
-        memory_llm:             dict (same shape) used during cognify for
-                                entity extraction / summarization.
-        embedding:              dict with provider, model, api_key, base_url,
-                                dimensions, batch_size, huggingface_tokenizer.
-        rerank:                 dict — logged but ignored (cognee has no
-                                rerank in its eval_framework).
-        data_root_directory:    cognee data path (DATA_ROOT_DIRECTORY env var).
-        system_root_directory:  cognee system path (SYSTEM_ROOT_DIRECTORY).
-        enable_backend_access_control: bool (default False — matches BEAM).
-        structured_output_framework: str (default "instructor").
+    Generates cognee's .env file from the harness YAML config so that
+    cognee's own `dotenv.load_dotenv(dotenv_path=...)` picks up the right
+    values at import time. No OS env var injection, no monkey-patching.
 
-    Side effects on success:
-        Sets OS env vars for the keys above so cognee's pydantic-settings
-        can find them at import or first-call time.
-        Tries `import cognee`; logs and proceeds on failure (the adapter
-        will also fail loudly when actually used, but the build step is
-        not blocked).
+    Configuration (in YAML `config/systems/cognee.yaml`):
+        llm:                    dict with provider, model, api_key, base_url,
+                                temperature, max_tokens.
+        embedding:              dict with provider, model, api_key, base_url,
+                                dimensions, huggingface_tokenizer.
+        data_root_directory:    cognee data path (DATA_ROOT_DIRECTORY).
+        system_root_directory:  cognee system path (SYSTEM_ROOT_DIRECTORY).
+        enable_backend_access_control:  bool, default false.
+        structured_output_framework:    str, default "instructor".
+        prune_on_init:          bool, wipe cognee state before run.
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
         self._started = False
-        self._cognee_imported = False
 
-    # ----- BaseBuilder contract ------------------------------------------------
+    # -- BaseBuilder contract ------------------------------------------------
 
     async def build(self) -> bool:
         if self._started:
             logger.info("Cognee builder already started")
             return True
 
-        env_mappings = self._build_env_mappings()
-        self._apply_env(env_mappings)
+        env_path = self._resolve_env_path()
+        content = self._generate_env_content()
+        env_path.write_text(content, encoding="utf-8")
+        logger.info("Cognee .env written: %s", env_path)
 
-        # Pre-import cognee so import-time errors surface before the eval run.
-        # Note: cognee's __init__.py calls dotenv.load_dotenv(override=True)
-        # which would overwrite the env vars we just set if there is a .env
-        # file in cwd. We accept that — the adapter passes per-call
-        # llm_config/embedding_config overrides so its behavior does not
-        # depend on the post-dotenv state.
-        # Lifecycle step — wipe cognee state if explicitly requested.
-        # Lives in the builder (not the adapter) because it's a run-level
-        # concern, not a per-call concern. Matches BEAM's pre-run reset:
-        #   cognee.prune.prune_data() + cognee.prune.prune_system(metadata=True)
         if self.config.get("prune_on_init", False):
             await self._prune_state()
 
         self._started = True
-        logger.info(
-            "Cognee builder completed (in-process mode, no Docker). "
-            "cognee_available=%s, prune_on_init=%s",
-            self._cognee_imported,
-            self.config.get("prune_on_init", False),
-        )
+        logger.info("Cognee builder completed (in-process mode)")
         return True
-
-    async def _prune_state(self) -> None:
-        """Wipe cognee's graph + vector + raw data + metadata tables.
-
-        Mirrors cognee's eval_framework/corpus_builder_executor.py:59-60 pattern:
-            await cognee.prune.prune_data()
-            await cognee.prune.prune_system(metadata=True)
-        Failure here is logged but does not abort `build()` — the adapter can
-        still run on top of any partially-cleaned or pre-existing state.
-        """
-        try:
-            import cognee
-            from cognee.api.v1.prune import prune as cognee_prune
-            await cognee_prune.prune_data()
-            await cognee_prune.prune_system(metadata=True)
-            logger.info("  cognee state wiped via prune_data + prune_system(metadata=True)")
-        except Exception as exc:
-            logger.error(
-                "cognee prune failed: %s — adapter will run on whatever state "
-                "cognee is currently in", exc, exc_info=True,
-            )
 
     async def cleanup(self) -> bool:
         if not self._started:
             return True
         self._started = False
-        self._cognee_imported = False
         logger.info("Cognee builder cleanup completed")
         return True
 
@@ -171,120 +116,151 @@ class CogneeBuilder(BaseBuilder):
             "name": self.__class__.__name__,
             "started": self._started,
             "mode": "in_process",
-            "cognee_available": self._cognee_imported,
         }
 
-    # ----- env-var translation -------------------------------------------------
+    # -- .env file generation ------------------------------------------------
 
-    def _build_env_mappings(self) -> Dict[str, str]:
-        """Translate harness-level config dict into OS env-var mappings that
-        cognee's pydantic-settings LLMConfig / EmbeddingConfig read at import."""
-        mappings: Dict[str, str] = {}
+    def _resolve_env_path(self) -> Path:
+        """Path to systems/cognee/.env.
 
-        llm_cfg = self.config.get("llm", {}) or {}
-        if llm_cfg:
-            provider = _resolve_env_var(llm_cfg.get("provider") or "openai")
-            model = _resolve_env_var(llm_cfg.get("model") or "")
-            api_key = _resolve_env_var(llm_cfg.get("api_key") or "")
-            base_url = _resolve_env_var(llm_cfg.get("base_url") or "")
-            mappings["LLM_PROVIDER"] = str(provider)
-            if model:
-                # cognee expects 'provider/model' format
-                if "/" not in model:
-                    model = f"{provider}/{model}"
-                mappings["LLM_MODEL"] = model
-            if api_key:
-                mappings["LLM_API_KEY"] = str(api_key)
-            if base_url:
-                mappings["LLM_ENDPOINT"] = str(base_url)
-            if llm_cfg.get("temperature") is not None:
-                mappings["LLM_TEMPERATURE"] = str(llm_cfg.get("temperature"))
-            if llm_cfg.get("max_tokens") is not None:
-                mappings["LLM_MAX_COMPLETION_TOKENS"] = str(llm_cfg.get("max_tokens"))
+        cognee_builder.py lives at:  src/builders/cognee_builder.py
+        cognee .env is at:           systems/cognee/.env
+        """
+        return (Path(__file__).resolve().parents[2] / "systems" / "cognee" / ".env")
 
-        emb_cfg = self.config.get("embedding", {}) or {}
-        if emb_cfg:
-            provider = _resolve_env_var(emb_cfg.get("provider") or "openai_compatible")
-            model = _resolve_env_var(emb_cfg.get("model") or "")
-            api_key = _resolve_env_var(emb_cfg.get("api_key") or "")
-            base_url = _resolve_env_var(emb_cfg.get("base_url") or "")
-            dims = emb_cfg.get("dimensions")
-            mappings["EMBEDDING_PROVIDER"] = str(provider)
-            if model:
-                mappings["EMBEDDING_MODEL"] = str(model)
-            if api_key:
-                mappings["EMBEDDING_API_KEY"] = str(api_key)
-            if base_url:
-                mappings["EMBEDDING_ENDPOINT"] = str(base_url)
-            if dims is not None:
-                mappings["EMBEDDING_DIMENSIONS"] = str(dims)
-            tokenizer = emb_cfg.get("huggingface_tokenizer")
-            if tokenizer:
-                mappings["HUGGINGFACE_TOKENIZER"] = str(_resolve_env_var(tokenizer))
+    def _generate_env_content(self) -> str:
+        """Translate harness config into a cognee-format .env file."""
+        lines: list[str] = []
+        written: set[str] = set()  # track keys to avoid duplicates
+
+        self._write_section(lines, "LLM Config (DeepSeek / OpenAI-compatible)")
+        self._write_llm(lines, written)
+
+        self._write_section(lines, "Embedding Config")
+        self._write_embedding(lines, written)
 
         if self.config.get("rerank"):
             logger.warning(
                 "cognee eval_framework does not implement a rerank model. "
-                "The 'rerank' config block is recorded but ignored."
+                "The 'rerank' config block is ignored."
             )
 
+        self._write_section(lines, "Data Directories")
+        self._write_paths(lines, written)
+
+        self._write_kv(lines, "ENABLE_BACKEND_ACCESS_CONTROL",
+                       str(self.config.get("enable_backend_access_control", "false")).lower(),
+                       written)
+        self._write_kv(lines, "STRUCTURED_OUTPUT_FRAMEWORK",
+                       str(self.config.get("structured_output_framework", "instructor")),
+                       written)
+
+        return "\n".join(lines) + "\n"
+
+    def _write_section(self, lines: list[str], title: str) -> None:
+        if lines:
+            lines.append("")  # blank before each section
+        lines.append(f"# {'=' * 60}")
+        lines.append(f"# {title}")
+        lines.append(f"# {'=' * 60}")
+
+    def _write_llm(self, lines: list[str], written: set[str]) -> None:
+        llm = self.config.get("llm", {}) or {}
+        if not llm:
+            return
+
+        provider = str(_resolve_env_var(llm.get("provider", "openai")))
+        model = _resolve_env_var(llm.get("model", ""))
+        api_key = _resolve_env_var(llm.get("api_key", ""))
+        base_url = _resolve_env_var(llm.get("base_url", ""))
+
+        # cognee's litellm path expects 'provider/model' format, but the
+        # 'default' sentinel bypasses litellm entirely and routes to
+        # DeepSeekAdapter, which sends the model name verbatim to the API.
+        if model and "/" not in model and provider != "default":
+            model = f"{provider}/{model}"
+
+        self._write_kv(lines, "LLM_PROVIDER", provider, written)
+        if model:
+            self._write_kv(lines, "LLM_MODEL", str(model), written)
+        if api_key:
+            self._write_kv(lines, "LLM_API_KEY", str(api_key), written)
+        if base_url:
+            self._write_kv(lines, "LLM_ENDPOINT", str(base_url), written)
+        if llm.get("temperature") is not None:
+            self._write_kv(lines, "LLM_TEMPERATURE", str(llm["temperature"]), written)
+        if llm.get("max_tokens") is not None:
+            self._write_kv(lines, "LLM_MAX_COMPLETION_TOKENS", str(llm["max_tokens"]), written)
+        llm_args = llm.get("llm_args")
+        if llm_args:
+            if isinstance(llm_args, dict):
+                import json
+                self._write_kv(lines, "LLM_ARGS", json.dumps(llm_args), written)
+            else:
+                self._write_kv(lines, "LLM_ARGS", str(_resolve_env_var(llm_args)), written)
+
+    def _write_embedding(self, lines: list[str], written: set[str]) -> None:
+        emb = self.config.get("embedding", {}) or {}
+        if not emb:
+            return
+
+        provider = str(_resolve_env_var(emb.get("provider", "openai_compatible")))
+        model = _resolve_env_var(emb.get("model", ""))
+        api_key = _resolve_env_var(emb.get("api_key", ""))
+        base_url = _resolve_env_var(emb.get("base_url", ""))
+        dims = emb.get("dimensions")
+        tokenizer = emb.get("huggingface_tokenizer")
+
+        self._write_kv(lines, "EMBEDDING_PROVIDER", provider, written)
+        if model:
+            self._write_kv(lines, "EMBEDDING_MODEL", str(model), written)
+        if api_key:
+            self._write_kv(lines, "EMBEDDING_API_KEY", str(api_key), written)
+        if base_url:
+            self._write_kv(lines, "EMBEDDING_ENDPOINT", str(base_url), written)
+        if dims is not None:
+            self._write_kv(lines, "EMBEDDING_DIMENSIONS", str(dims), written)
+        if tokenizer:
+            self._write_kv(lines, "HUGGINGFACE_TOKENIZER", str(_resolve_env_var(tokenizer)), written)
+
+    def _write_paths(self, lines: list[str], written: set[str]) -> None:
         data_root = self.config.get("data_root_directory")
         if data_root:
-            # Resolve relative paths against this builder's project root so
-            # cognee's BaseConfig validation (`Path must be absolute`) passes
-            # on Windows where dotted paths like `.cognee/data` are not
-            # absolute. S3 URLs and already-absolute paths pass through
-            # untouched.
-            mappings["DATA_ROOT_DIRECTORY"] = _absolutize_path(
-                data_root, project_root=self.project_root,
-            )
+            resolved = _absolutize_path(data_root, project_root=self.project_root)
+            self._write_kv(lines, "DATA_ROOT_DIRECTORY", resolved, written)
         sys_root = self.config.get("system_root_directory")
         if sys_root:
-            mappings["SYSTEM_ROOT_DIRECTORY"] = _absolutize_path(
-                sys_root, project_root=self.project_root,
+            resolved = _absolutize_path(sys_root, project_root=self.project_root)
+            self._write_kv(lines, "SYSTEM_ROOT_DIRECTORY", resolved, written)
+
+    def _write_kv(self, lines: list[str], key: str, value: str,
+                  written: set[str]) -> None:
+        """Write a KEY=VALUE line, skipping empty values and duplicates."""
+        if not value:
+            return
+        if key in written:
+            logger.warning("Duplicate env key skipped: %s", key)
+            return
+        lines.append(f"{key}={value}")
+        written.add(key)
+        logger.info("  %s=%s", key, _mask_value(key, value))
+
+    # -- state management ----------------------------------------------------
+
+    async def _prune_state(self) -> None:
+        """Wipe cognee graph + vector + raw data + metadata tables.
+
+        Mirrors cognee's eval_framework per-run reset:
+            await cognee.prune.prune_data()
+            await cognee.prune.prune_system(metadata=True)
+        """
+        try:
+            from cognee.api.v1.prune import prune as cognee_prune
+            await cognee_prune.prune_data()
+            await cognee_prune.prune_system(metadata=True)
+            logger.info("  cognee state wiped via prune_data + prune_system(metadata=True)")
+        except Exception as exc:
+            logger.error(
+                "cognee prune failed: %s — adapter will run on current state",
+                exc, exc_info=True,
             )
-
-        # Toggle access control off by default (BEAM posture).
-        mappings.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
-        mappings.setdefault(
-            "STRUCTURED_OUTPUT_FRAMEWORK",
-            str(self.config.get("structured_output_framework", "instructor")),
-        )
-
-        # Instructor mode and litellm extra_body knobs (`llm_instructor_mode`,
-        # `llm_args`) used to live here as workarounds for DeepSeek-style
-        # reasoning models fighting cognee's litellm/instructor path. They
-        # were removed when we switched `llm.provider` to `default` (sentinel
-        # that routes through our custom DeepSeek adapter instead). The custom
-        # adapter auto-injects `extra_body: {thinking: {type: disabled}}` and
-        # uses native `response_format: json_schema` — no env knobs needed.
-        # cf. cognee/infrastructure/llm/.../deepseek/adapter.py.
-
-        # Co-name alias bridge. The harness `.env` historically uses
-        # `LLM_BASE_URL` / `VECTORIZE_BASE_URL` / `RERANK_BASE_URL`, while
-        # cognee's LLMConfig and EmbeddingConfig read `LLM_ENDPOINT` /
-        # `EMBEDDING_ENDPOINT`. Propagate between them so cognee's pydantic-
-        # settings actually see the value when the user only set `*_BASE_URL`
-        # in `.env`. We do it here (instead of touching cli.py) so the alias
-        # bridge is contained in the cognee-specific builder.
-        llm_url = mappings.get("LLM_ENDPOINT") or os.environ.get("LLM_BASE_URL")
-        if llm_url:
-            mappings.setdefault("LLM_ENDPOINT", llm_url)
-            os.environ.setdefault("LLM_BASE_URL", llm_url)
-        emb_url = mappings.get("EMBEDDING_ENDPOINT") or os.environ.get("VECTORIZE_BASE_URL")
-        if emb_url:
-            mappings.setdefault("EMBEDDING_ENDPOINT", emb_url)
-            os.environ.setdefault("VECTORIZE_BASE_URL", emb_url)
-
-        return mappings
-
-    def _apply_env(self, mappings: Dict[str, str]) -> None:
-        for key, value in mappings.items():
-            if value in (None, ""):
-                continue
-            os.environ[key] = value
-            if "API_KEY" in key:
-                masked = value[:8] + "..." if len(value) > 8 else "***"
-                logger.info("  %s=%s", key, masked)
-            else:
-                logger.info("  %s=%s", key, value)

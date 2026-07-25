@@ -25,6 +25,7 @@ env/
 # Output & results
 output/
 results/
+.cognee/
 
 
 # Project subdirectories
@@ -38,6 +39,7 @@ systems/*/
 !systems/MindMemOS/
 !systems/EverMemOS_bz/
 !systems/hindsight/
+!systems/cognee/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml

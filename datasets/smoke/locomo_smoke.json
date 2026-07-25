@@ -2621,7 +2621,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa1",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 7 May 2023",
@@ -2642,7 +2642,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa2",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2022",
@@ -2664,7 +2664,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa3",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Psychology, counseling certification",
@@ -2685,7 +2685,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa4",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Adoption agencies",
@@ -2706,7 +2706,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa5",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Transgender woman",
@@ -2727,7 +2727,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa6",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The sunday before 25 May 2023",
@@ -2748,7 +2748,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa7",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified June 2023",
@@ -2770,7 +2770,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa8",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Single",
@@ -2791,7 +2791,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa9",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 9 June 2023",
@@ -2812,7 +2812,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa10",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 9 June 2023",
@@ -2833,7 +2833,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa11",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 4 years",
@@ -2855,7 +2855,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa12",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Sweden",
@@ -2876,7 +2876,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa13",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 10 years ago",
@@ -2898,7 +2898,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa14",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified counseling or mental health for Transgender people",
@@ -2920,7 +2920,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa15",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Likely no",
@@ -2944,7 +2944,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa16",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified pottery, camping, painting, swimming",
@@ -2965,7 +2965,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa17",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2 July 2023",
@@ -2986,7 +2986,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa18",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified July 2023",
@@ -3009,7 +3009,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa19",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified beach, mountains, forest",
@@ -3031,7 +3031,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa20",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified dinosaurs, nature",
@@ -3052,7 +3052,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa21",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 5 July 2023",
@@ -3073,7 +3073,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa22",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 6 July 2023",
@@ -3094,7 +3094,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa23",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes, since she collects classic children's books",
@@ -3116,7 +3116,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa24",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified \"Nothing is Impossible\", \"Charlotte's Web\"",
@@ -3138,7 +3138,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa25",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Running, pottery",
@@ -3159,7 +3159,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa26",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 10 July 2023",
@@ -3180,7 +3180,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa27",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2022",
@@ -3202,7 +3202,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa28",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified LIkely no; though she likes reading, she wants to be a counselor",
@@ -3223,7 +3223,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa29",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The friday before 15 July 2023",
@@ -3244,7 +3244,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa30",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The Friday before 15 July 2023",
@@ -3263,7 +3263,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa31",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Likely no, she does not refer to herself as part of it",
@@ -3284,7 +3284,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa32",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 27 June 2023",
@@ -3308,7 +3308,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa33",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Pride parade, school speech, support group",
@@ -3329,7 +3329,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa34",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 3 July 2023",
@@ -3351,7 +3351,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa35",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Mentoring program, school speech",
@@ -3372,7 +3372,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa36",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified two weekends before 17 July 2023",
@@ -3393,7 +3393,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa37",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The weekend before 17 July 2023",
@@ -3414,7 +3414,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa38",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified sunset",
@@ -3440,7 +3440,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa39",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Pottery, painting, camping, museum, swimming, hiking",
@@ -3464,7 +3464,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa40",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Joining activist group, going to pride parades, participating in an art show, mentoring program",
@@ -3486,7 +3486,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa41",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2",
@@ -3507,7 +3507,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa42",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The Tuesday before 20 July 2023",
@@ -3529,7 +3529,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa43",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified National park; she likes the outdoors",
@@ -3552,7 +3552,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa44",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified abstract art",
@@ -3573,7 +3573,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa45",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 13 August",
@@ -3594,7 +3594,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa46",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The Friday before 14 August 2023",
@@ -3613,7 +3613,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa47",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes, she is supportive",
@@ -3635,7 +3635,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa48",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Her mentors, family, and friends",
@@ -3658,7 +3658,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa49",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified bowls, cup",
@@ -3679,7 +3679,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa50",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2022",
@@ -3700,7 +3700,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa51",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Liberal",
@@ -3723,7 +3723,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa52",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Horse, sunset, sunrise",
@@ -3745,7 +3745,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa53",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Oliver, Luna, Bailey",
@@ -3766,7 +3766,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa54",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week of 23 August 2023",
@@ -3787,7 +3787,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa55",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 23 August 2023",
@@ -3809,7 +3809,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa56",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Sunsets",
@@ -3831,7 +3831,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa57",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Rainbow flag, transgender symbol",
@@ -3852,7 +3852,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa58",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The week before 25 August 2023",
@@ -3873,7 +3873,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa59",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 24 August 2023",
@@ -3895,7 +3895,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa60",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Somewhat, but not extremely religious",
@@ -3917,7 +3917,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa61",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified clarinet and violin",
@@ -3939,7 +3939,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa62",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Summer Sounds, Matt Patterson",
@@ -3960,7 +3960,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa63",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 27 August 2023",
@@ -3981,7 +3981,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa64",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified September 2023",
@@ -4002,7 +4002,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa65",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes; it's classical music",
@@ -4024,7 +4024,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa66",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Changes to her body, losing unsupportive friends",
@@ -4046,7 +4046,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa67",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Roast marshmallows, tell stories",
@@ -4067,7 +4067,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa68",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The weekend before 13 September 2023",
@@ -4088,7 +4088,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa69",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Since 2016",
@@ -4111,7 +4111,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa70",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Thoughtful, authentic, driven",
@@ -4133,7 +4133,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa71",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Poetry reading, conference",
@@ -4155,7 +4155,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa72",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified \"Becoming Nicole\"",
@@ -4176,7 +4176,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa73",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 2022",
@@ -4197,7 +4197,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa74",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified September 2023",
@@ -4218,7 +4218,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa75",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The weekend before 20 October 2023",
@@ -4240,7 +4240,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa76",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 3",
@@ -4261,7 +4261,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa77",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 19 October 2023",
@@ -4283,7 +4283,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa78",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Likely no; since this one went badly",
@@ -4305,7 +4305,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-26_qa79",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Figurines, shoes",
@@ -4326,7 +4326,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa80",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified The Friday before 22 October 2023",
@@ -4347,7 +4347,7 @@
           "factual recall"
         ],
         "question_id": "conv-26_qa81",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 21 October 2023",
@@ -4369,7 +4369,7 @@
           "inference"
         ],
         "question_id": "conv-26_qa82",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified No; she's in the process of adopting children.",
@@ -4390,7 +4390,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa83",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified mental health",
@@ -4411,7 +4411,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa84",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified self-care is important",
@@ -4432,7 +4432,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa85",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified by carving out some me-time each day for activities like running, reading, or playing the violin",
@@ -4453,7 +4453,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa86",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified researching adoption agencies",
@@ -4474,7 +4474,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa87",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified LGBTQ+ individuals",
@@ -4495,7 +4495,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa88",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified because of their inclusivity and support for LGBTQ+ individuals",
@@ -4516,7 +4516,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa89",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified creating a family for kids who need one",
@@ -4537,7 +4537,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa90",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified she thinks Caroline is doing something amazing and will be an awesome mom",
@@ -4558,7 +4558,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa91",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Mel and her husband have been married for 5 years.",
@@ -4579,7 +4579,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa92",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified love, faith, and strength",
@@ -4600,7 +4600,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa93",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Sweden",
@@ -4621,7 +4621,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa94",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified necklace",
@@ -4642,7 +4642,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa95",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified art and self-expression",
@@ -4663,7 +4663,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa96",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified explored nature, roasted marshmallows, and went on a hike",
@@ -4684,7 +4684,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa97",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified working with trans people, helping them accept themselves and supporting their mental health",
@@ -4705,7 +4705,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa98",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified LGBTQ+ counseling workshop",
@@ -4726,7 +4726,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa99",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified therapeutic methods and how to best work with trans people",
@@ -4747,7 +4747,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa100",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified her own journey and the support she received, and how counseling improved her life",
@@ -4768,7 +4768,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa101",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a safe and inviting place for people to grow",
@@ -4789,7 +4789,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa102",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes",
@@ -4810,7 +4810,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa103",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified kids' books - classics, stories from different cultures, educational books",
@@ -4831,7 +4831,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa104",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified \"Charlotte's Web\"",
@@ -4852,7 +4852,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa105",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified \"Becoming Nicole\"",
@@ -4873,7 +4873,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa106",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Lessons on self-acceptance and finding support",
@@ -4894,7 +4894,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa107",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Running",
@@ -4915,7 +4915,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa108",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified To de-stress and clear her mind",
@@ -4936,7 +4936,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa109",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Her mental health",
@@ -4957,7 +4957,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa110",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified pots",
@@ -4978,7 +4978,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa111",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a cup with a dog face on it",
@@ -4999,7 +4999,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa112",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified painting",
@@ -5020,7 +5020,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa113",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a sunset with a palm tree",
@@ -5041,7 +5041,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa114",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified many people wanting to create loving homes for children in need",
@@ -5062,7 +5062,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa115",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified warmth and happiness",
@@ -5083,7 +5083,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa116",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified They remind her to appreciate the small moments and were a part of her wedding decor",
@@ -5104,7 +5104,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa117",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified visiting an LGBTQ center and wanting to capture unity and strength",
@@ -5125,7 +5125,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa118",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified once or twice a year",
@@ -5146,7 +5146,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa119",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Perseid meteor shower",
@@ -5167,7 +5167,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa120",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified in awe of the universe",
@@ -5188,7 +5188,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa121",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Melanie's daughter",
@@ -5209,7 +5209,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa122",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Matt Patterson",
@@ -5230,7 +5230,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa123",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She wanted to catch the eye and make people smile.",
@@ -5251,7 +5251,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa124",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified guinea pig",
@@ -5272,7 +5272,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa125",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Two cats and a dog",
@@ -5293,7 +5293,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa126",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified In Melanie's slipper",
@@ -5314,7 +5314,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa127",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Horseback riding",
@@ -5335,7 +5335,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa128",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a stained glass window",
@@ -5356,7 +5356,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa129",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a rainbow sidewalk",
@@ -5377,7 +5377,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa130",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Brave by Sara Bareilles",
@@ -5398,7 +5398,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa131",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Bach and Mozart",
@@ -5419,7 +5419,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa132",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Ed Sheeran",
@@ -5440,7 +5440,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa133",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified 7 years",
@@ -5461,7 +5461,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa134",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified A sign stating that someone is not being able to leave",
@@ -5482,7 +5482,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa135",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Do research, find an adoption agency or lawyer, gather necessary documents, and prepare emotionally.",
@@ -5503,7 +5503,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa136",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She got hurt and had to take a break from pottery.",
@@ -5524,7 +5524,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa137",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Read a book and paint.",
@@ -5545,7 +5545,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa138",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified A painting inspired by sunsets with a pink sky.",
@@ -5566,7 +5566,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa139",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified An abstract painting with blue streaks on a wall.",
@@ -5587,7 +5587,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa140",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified It was a transgender poetry reading where transgender people shared their stories.",
@@ -5608,7 +5608,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa141",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified \"Trans Lives Matter\"",
@@ -5629,7 +5629,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa142",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Freedom and being true to herself.",
@@ -5650,7 +5650,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa143",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified An ongoing adventure of learning and growing.",
@@ -5671,7 +5671,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa144",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified He got into an accident",
@@ -5693,7 +5693,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa145",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified He was scared but reassured by his family",
@@ -5714,7 +5714,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa146",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified They are important and mean the world to her",
@@ -5735,7 +5735,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa147",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified They were scared but resilient",
@@ -5756,7 +5756,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa148",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Grateful and thankful for her family",
@@ -5777,7 +5777,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa149",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She was happy and thankful",
@@ -5798,7 +5798,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa150",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Strength and motivation",
@@ -5819,7 +5819,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa151",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She appreciated them a lot",
@@ -5840,7 +5840,7 @@
           "summary"
         ],
         "question_id": "conv-26_qa152",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Went on a nature walk or hike",
@@ -5861,7 +5861,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa153",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified self-care is important",
@@ -5882,7 +5882,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa154",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified researching adoption agencies",
@@ -5903,7 +5903,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa155",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified LGBTQ+ individuals",
@@ -5924,7 +5924,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa156",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified because of their inclusivity and support for LGBTQ+ individuals",
@@ -5945,7 +5945,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa157",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified creating a family for kids who need one",
@@ -5966,7 +5966,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa158",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified love, faith, and strength",
@@ -5987,7 +5987,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa159",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Sweden",
@@ -6008,7 +6008,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa160",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified necklace",
@@ -6029,7 +6029,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa161",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified necklace",
@@ -6050,7 +6050,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa162",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified art and self-expression",
@@ -6071,7 +6071,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa163",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified explored nature, roasted marshmallows, and went on a hike",
@@ -6092,7 +6092,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa164",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified working with trans people, helping them accept themselves and supporting their mental health",
@@ -6113,7 +6113,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa165",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified LGBTQ+ counseling workshop",
@@ -6134,7 +6134,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa166",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified her own journey and the support she received, and how counseling improved her life",
@@ -6155,7 +6155,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa167",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a safe and inviting place for people to grow",
@@ -6176,7 +6176,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa168",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes",
@@ -6197,7 +6197,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa169",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Running",
@@ -6218,7 +6218,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa170",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified To de-stress and clear her mind",
@@ -6239,7 +6239,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa171",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Her mental health",
@@ -6260,7 +6260,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa172",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified many people wanting to create loving homes for children in need",
@@ -6281,7 +6281,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa173",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified visiting an LGBTQ center and wanting to capture unity and strength",
@@ -6302,7 +6302,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa174",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified visiting an LGBTQ center and wanting to capture unity and strength",
@@ -6323,7 +6323,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa175",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified once or twice a year",
@@ -6344,7 +6344,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa176",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Perseid meteor shower",
@@ -6365,7 +6365,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa177",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified in awe of the universe",
@@ -6386,7 +6386,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa178",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She wanted to catch the eye and make people smile.",
@@ -6407,7 +6407,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa179",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Yes",
@@ -6428,7 +6428,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa180",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified In Melanie's slipper",
@@ -6449,7 +6449,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa181",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Horseback riding",
@@ -6470,7 +6470,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa182",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a stained glass window",
@@ -6491,7 +6491,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa183",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified a rainbow sidewalk",
@@ -6512,7 +6512,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa184",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Brave by Sara Bareilles",
@@ -6533,7 +6533,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa185",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified clarinet and violin",
@@ -6554,7 +6554,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa186",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Bach and Mozart",
@@ -6575,7 +6575,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa187",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Ed Sheeran",
@@ -6596,7 +6596,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa188",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified A sign stating that someone is not being able to leave",
@@ -6617,7 +6617,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa189",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She got hurt and had to take a break from pottery.",
@@ -6638,7 +6638,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa190",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Read a book and paint.",
@@ -6659,7 +6659,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa191",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified It was a transgender poetry reading where transgender people shared their stories.",
@@ -6680,7 +6680,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa192",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified He got into an accident",
@@ -6702,7 +6702,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa193",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified He was scared but reassured by his family",
@@ -6723,7 +6723,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa194",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified They are important and mean the world to her",
@@ -6744,7 +6744,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa195",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified They were scared but resilient",
@@ -6765,7 +6765,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa196",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Grateful and thankful for her family",
@@ -6786,7 +6786,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa197",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified She was happy and thankful",
@@ -6807,7 +6807,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa198",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Went on a nature walk or hike",
@@ -6828,7 +6828,7 @@
           "adversarial"
         ],
         "question_id": "conv-26_qa199",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-10-22",
         "score_points": [
           {
             "description": "Correctly identified Being present and bonding with her family",
@@ -8963,7 +8963,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa1",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 19 January, 2023",
@@ -8984,7 +8984,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa2",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified January, 2023",
@@ -9006,7 +9006,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa3",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified by dancing",
@@ -9030,7 +9030,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa4",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified They lost their jobs and decided to start their own businesses.",
@@ -9052,7 +9052,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa5",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified He lost his job and decided to start his own business to share his passion.",
@@ -9075,7 +9075,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa6",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified By the water, with natural light and Marley flooring",
@@ -9096,7 +9096,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa7",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified February, 2023",
@@ -9117,7 +9117,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa8",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 29 January, 2023",
@@ -9138,7 +9138,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa9",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 28 January 2023",
@@ -9160,7 +9160,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa10",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Rome",
@@ -9181,7 +9181,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa11",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified February, 2023",
@@ -9202,7 +9202,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa12",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified A few years ago",
@@ -9223,7 +9223,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa13",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified March, 2023",
@@ -9244,7 +9244,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa14",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 16 March, 2023",
@@ -9265,7 +9265,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa15",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified April, 2023",
@@ -9286,7 +9286,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa16",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified May, 2023",
@@ -9307,7 +9307,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa17",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 24 April, 2023",
@@ -9329,7 +9329,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa18",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified She always loved fashion trends and finding unique pieces and she lost her job so decided it was time to start her own business.",
@@ -9351,7 +9351,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa19",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Yes",
@@ -9372,7 +9372,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa20",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 10 May, 2023",
@@ -9393,7 +9393,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa21",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 27 May, 2023",
@@ -9414,7 +9414,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa22",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified May, 2023",
@@ -9435,7 +9435,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa23",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified June, 2023",
@@ -9459,7 +9459,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa24",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified worked with an artist to make unique fashion pieces, made limited-edition sweatshirts, got some new offers and promotions for online store, developed a video presentation showing how to style her pieces",
@@ -9482,7 +9482,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa25",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fair, networking events, dance competition",
@@ -9504,7 +9504,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa26",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified one-on-one metoring and training to dancers,  workshops and classes to local schools and centers",
@@ -9525,7 +9525,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa27",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 15 June, 2023",
@@ -9550,7 +9550,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa28",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Yes",
@@ -9571,7 +9571,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa29",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified June 2023",
@@ -9593,7 +9593,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa30",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Paris, Rome",
@@ -9614,7 +9614,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa31",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 20 June, 2023",
@@ -9636,7 +9636,7 @@
           "topic retrieval"
         ],
         "question_id": "conv-30_qa32",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified six months",
@@ -9657,7 +9657,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa33",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified June 2023",
@@ -9678,7 +9678,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa34",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 20 June, 2023",
@@ -9699,7 +9699,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa35",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified July 2023",
@@ -9720,7 +9720,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa36",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified July, 2023",
@@ -9741,7 +9741,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa37",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 21 July 2023",
@@ -9762,7 +9762,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa38",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified  23 July, 2023",
@@ -9783,7 +9783,7 @@
           "factual recall"
         ],
         "question_id": "conv-30_qa39",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified 21 July 2023",
@@ -9804,7 +9804,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa40",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Contemporary",
@@ -9825,7 +9825,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa41",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Contemporary",
@@ -9846,7 +9846,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa42",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Winning first place at a regionals dance competition",
@@ -9867,7 +9867,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa43",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified \"Finding Freedom\"",
@@ -9888,7 +9888,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa44",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified They are performing at the festival",
@@ -9909,7 +9909,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa45",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified They look graceful",
@@ -9930,7 +9930,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa46",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Glad",
@@ -9951,7 +9951,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa47",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Marley flooring",
@@ -9972,7 +9972,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa48",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The perfect spot for her store",
@@ -9993,7 +9993,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa49",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified the space, furniture, and decor",
@@ -10015,7 +10015,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa50",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified cozy and comfortable",
@@ -10036,7 +10036,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa51",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified hard work's paying off",
@@ -10057,7 +10057,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa52",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified personal style and customer comfort",
@@ -10078,7 +10078,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa53",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified It's the key to making them feel welcome and coming back",
@@ -10099,7 +10099,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa54",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified making them want to come back",
@@ -10120,7 +10120,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa55",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The store is doing great.",
@@ -10141,7 +10141,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa56",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Freedom and expressing herself through dance",
@@ -10163,7 +10163,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa57",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified dancing together and supporting each other",
@@ -10184,7 +10184,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa58",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified build relationships with customers, create a strong brand image, stay positive",
@@ -10205,7 +10205,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa59",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified for his business",
@@ -10226,7 +10226,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa60",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified she is passionate about dance and fashion",
@@ -10247,7 +10247,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa61",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified happy",
@@ -10268,7 +10268,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa62",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified a trophy",
@@ -10289,7 +10289,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa63",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified By reminding herself of her successes and progress, having a support system, and focusing on why she started",
@@ -10310,7 +10310,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa64",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fashion internship",
@@ -10331,7 +10331,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa65",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fashion department of an international company",
@@ -10352,7 +10352,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa66",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The Lean Startup",
@@ -10373,7 +10373,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa67",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified One-on-one mentoring and training",
@@ -10394,7 +10394,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa68",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified To set goals, track achievements, and find areas for improvement",
@@ -10415,7 +10415,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa69",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified quit",
@@ -10436,7 +10436,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa70",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified To clear his mind",
@@ -10457,7 +10457,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa71",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified a dance studio",
@@ -10478,7 +10478,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa72",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified amazing",
@@ -10499,7 +10499,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa73",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified excited",
@@ -10520,7 +10520,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa74",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified magical",
@@ -10541,7 +10541,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa75",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified savor all the good vibes",
@@ -10562,7 +10562,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa76",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Let's live it up and make some great memories",
@@ -10584,7 +10584,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa77",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified excitement",
@@ -10605,7 +10605,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa78",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Hoodies",
@@ -10626,7 +10626,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa79",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified His positivity and determination",
@@ -10647,7 +10647,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa80",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Not mentioned",
@@ -10668,7 +10668,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa81",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Sprucing up his business plan, tweaking his pitch to investors, and working on an online platform.",
@@ -10689,7 +10689,7 @@
           "summary"
         ],
         "question_id": "conv-30_qa82",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Helping with making content and managing his social media accounts.",
@@ -10710,7 +10710,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa83",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Contemporary",
@@ -10731,7 +10731,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa84",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Winning first place at a regionals dance competition",
@@ -10752,7 +10752,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa85",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified \"Finding Freedom\"",
@@ -10773,7 +10773,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa86",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Glad",
@@ -10794,7 +10794,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa87",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Marley flooring",
@@ -10815,7 +10815,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa88",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The perfect spot for her store",
@@ -10836,7 +10836,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa89",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified the space, furniture, and decor",
@@ -10858,7 +10858,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa90",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified cozy and comfortable",
@@ -10879,7 +10879,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa91",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified personal style and customer comfort",
@@ -10900,7 +10900,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa92",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The store is doing great.",
@@ -10921,7 +10921,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa93",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Freedom and expressing himself through dance",
@@ -10942,7 +10942,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa94",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified for her business",
@@ -10963,7 +10963,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa95",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified he is passionate about dance and fashion",
@@ -10984,7 +10984,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa96",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified a trophy",
@@ -11005,7 +11005,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa97",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fashion internship",
@@ -11026,7 +11026,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa98",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fashion department of an international company",
@@ -11047,7 +11047,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa99",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified fashion department of an international company",
@@ -11068,7 +11068,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa100",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified The Lean Startup",
@@ -11089,7 +11089,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa101",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified To set goals, track achievements, and find areas for improvement",
@@ -11110,7 +11110,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa102",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified To clear his mind",
@@ -11131,7 +11131,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa103",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Hoodies",
@@ -11152,7 +11152,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa104",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Not mentioned",
@@ -11173,7 +11173,7 @@
           "adversarial"
         ],
         "question_id": "conv-30_qa105",
-        "ask_time": "2025-05-08",
+        "ask_time": "2023-07-23",
         "score_points": [
           {
             "description": "Correctly identified Sprucing up her business plan, tweaking her pitch to investors, and working on an online platform.",
