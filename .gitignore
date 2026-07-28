@@ -40,6 +40,7 @@ systems/*/
 !systems/EverMemOS_bz/
 !systems/hindsight/
 !systems/cognee/
+!systems/mem0/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml
