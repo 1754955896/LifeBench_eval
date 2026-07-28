@@ -1,16 +1,140 @@
 api_keys:
-- key_id: key_locomo_schema_20260719_170536_37d51269
-  api_key: dev-api-key-locomo-schema-20260719-170536-37d51269
-  project_id: proj_locomo_schema_20260719_170536_37d51269
-  memory_algorithm: schema
-- key_id: key_dev_001
-  api_key: dev-api-key-001
-  project_id: proj_dev_001
+- key_id: key_lifebench_vanilla_20260727_162424_de707b85
+  api_key: dev-api-key-lifebench-vanilla-20260727-162424-de707b85
+  project_id: proj_lifebench_vanilla_20260727_162424_de707b85
   memory_algorithm: vanilla
   enabled: true
   scopes:
   - memory:read
   - memory:write
+  project_override_config:
+    algo_config:
+      common:
+        prompt_language: EN
+      add:
+        vanilla:
+          chunk_soft_token_budget: 26000
+          chunk_hard_token_budget: 32000
+          turn_hard_token_budget: 16000
+          history_soft_token_budget: 2000
+          history_hard_token_budget: 4000
+          history_min_turn_count: 1
+          compaction_soft_token_budget: 16000
+          compaction_head_tokens: 4000
+          compaction_tail_tokens: 4000
+          compaction_summary_context_token_budget: 200000
+          compaction_summary_output_token_budget: 8000
+          time_gap_threshold_seconds: 1800
+          template_tokens: 1000
+          recall_budget: 2000
+          output_headroom: 4000
+          enable_entities: true
+      search:
+        request_top_k_max: 100
+        vanilla:
+          recall_size: 50
+          use_reranker: true
+          graph_enabled: true
+          graph_seed_memory_limit: 5
+          graph_related_per_seed: 3
+          graph_max_candidates: 10
+          graph_decay: 0.5
+          graph_score: 0.01
+        rerank:
+          max_query_length: 200
+          max_doc_length: 2000
+- key_id: key_lifebench_vanilla_20260727_171717_5f8cf7ca
+  api_key: dev-api-key-lifebench-vanilla-20260727-171717-5f8cf7ca
+  project_id: proj_lifebench_vanilla_20260727_171717_5f8cf7ca
+  memory_algorithm: vanilla
+  enabled: true
+  scopes:
+  - memory:read
+  - memory:write
+  project_override_config:
+    algo_config:
+      common:
+        prompt_language: EN
+      add:
+        vanilla:
+          chunk_soft_token_budget: 26000
+          chunk_hard_token_budget: 32000
+          turn_hard_token_budget: 16000
+          history_soft_token_budget: 2000
+          history_hard_token_budget: 4000
+          history_min_turn_count: 1
+          compaction_soft_token_budget: 16000
+          compaction_head_tokens: 4000
+          compaction_tail_tokens: 4000
+          compaction_summary_context_token_budget: 200000
+          compaction_summary_output_token_budget: 8000
+          time_gap_threshold_seconds: 1800
+          template_tokens: 1000
+          recall_budget: 2000
+          output_headroom: 4000
+          enable_entities: true
+      search:
+        request_top_k_max: 100
+        vanilla:
+          recall_size: 50
+          use_reranker: true
+          graph_enabled: true
+          graph_seed_memory_limit: 5
+          graph_related_per_seed: 3
+          graph_max_candidates: 10
+          graph_decay: 0.5
+          graph_score: 0.01
+        rerank:
+          max_query_length: 200
+          max_doc_length: 2000
+- key_id: key_lifebench_vanilla_20260728_053256_d82f5fe7
+  api_key: dev-api-key-lifebench-vanilla-20260728-053256-d82f5fe7
+  project_id: proj_lifebench_vanilla_20260728_053256_d82f5fe7
+  memory_algorithm: vanilla
+  enabled: true
+  scopes:
+  - memory:read
+  - memory:write
+  project_override_config:
+    algo_config:
+      common:
+        prompt_language: EN
+      add:
+        vanilla:
+          chunk_soft_token_budget: 26000
+          chunk_hard_token_budget: 32000
+          turn_hard_token_budget: 16000
+          history_soft_token_budget: 2000
+          history_hard_token_budget: 4000
+          history_min_turn_count: 1
+          compaction_soft_token_budget: 16000
+          compaction_head_tokens: 4000
+          compaction_tail_tokens: 4000
+          compaction_summary_context_token_budget: 200000
+          compaction_summary_output_token_budget: 8000
+          time_gap_threshold_seconds: 1800
+          template_tokens: 1000
+          recall_budget: 2000
+          output_headroom: 4000
+          enable_entities: true
+      search:
+        request_top_k_max: 100
+        vanilla:
+          recall_size: 50
+          use_reranker: true
+          graph_enabled: true
+          graph_seed_memory_limit: 5
+          graph_related_per_seed: 3
+          graph_max_candidates: 10
+          graph_decay: 0.5
+          graph_score: 0.01
+        rerank:
+          max_query_length: 200
+          max_doc_length: 2000
+- key_id: key_lifebench_schema_20260728_055428_03d6d379
+  api_key: dev-api-key-lifebench-schema-20260728-055428-03d6d379
+  project_id: proj_lifebench_schema_20260728_055428_03d6d379
+  memory_algorithm: schema
   enabled: true
   scopes:
   - memory:read
@@ -44,7 +168,7 @@ api_keys:
           chunker:
             split_mode: llm
             min_episode_length: 1
-            max_episode_length: 50
+            max_episode_length: 15
             max_buffer_size: 1000
             split_on_user_speaker: true
             max_minutes_from_first: 30
@@ -52,8 +176,6 @@ api_keys:
             episode_generation_max_retries: 3
       search:
         request_top_k_max: 100
-        rerank:
-          enabled: false
         schema_search:
           entity:
             recall_size: 800
@@ -74,7 +196,7 @@ api_keys:
             alloc_max_factor: 1.5
             use_property_extension: true
             extension_step: 3
-            higher_order_ratio: 0.0
+            higher_order_ratio: 0.4
           dual_path:
             enabled: true
             property_recall_size: 300
@@ -86,18 +208,14 @@ api_keys:
             episode_weight: 0.7
             non_episode_weight: 0.3
           edge:
-            top_k: 50
+            top_k: 2
             min_relevance_score: 0.1
           multi_hop: 2
           use_entity_agent_search: true
-          current_time_mode: unknown
-          min_time_window_days: 30
-          include_edges: false
-          output_max_edge_num: 10
         agentic:
           max_rounds: 3
-          top_k_per_round: 40
-          top_n_per_round: 16
+          top_k_per_round: 10
+          top_n_per_round: 5
           num_hops: 2
           use_rerank: true
           use_relevance_filter: false

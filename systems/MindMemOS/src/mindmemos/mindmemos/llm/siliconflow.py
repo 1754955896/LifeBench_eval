@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from typing import Any
 
 import httpx
@@ -31,7 +30,6 @@ class SiliconFlowEmbeddingProvider:
         payload: dict[str, Any] = {
             "model": self.model,
             "input": texts,
-            "encoding_format": "base64",
         }
         if self.dimensions is not None:
             payload["dimensions"] = self.dimensions
@@ -43,16 +41,6 @@ class SiliconFlowEmbeddingProvider:
             "Content-Type": "application/json",
         }
 
-    def _decode_embedding(self, data: list[dict[str, Any]]) -> list[list[float]]:
-        embeddings = []
-        for item in data:
-            emb = item.get("embedding", "")
-            if isinstance(emb, str):
-                emb = base64.b64decode(emb)
-                emb = list(emb)
-            embeddings.append(emb)
-        return embeddings
-
     async def embed(self, texts: str | list[str]) -> EmbeddingResponse:
         payload = self._build_payload(texts)
         headers = self._build_headers()
@@ -62,7 +50,9 @@ class SiliconFlowEmbeddingProvider:
             resp.raise_for_status()
             data = resp.json()
 
-        embeddings = self._decode_embedding(data.get("data", []))
+        embeddings: list[list[float]] = [
+            item["embedding"] for item in data.get("data", [])
+        ]
         usage = data.get("usage", {})
         return EmbeddingResponse(
             embeddings=embeddings,

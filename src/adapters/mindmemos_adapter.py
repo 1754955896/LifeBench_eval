@@ -2,14 +2,18 @@
 MindMemOS Adapter for LifeBench_eval.
 
 Uses mindmemos_sdk for API communication with MindMemOS server.
+LoCoMo logic is verbatim-ported from mindmemos_eval memory/envs/locomo/env.py.
 """
 
 import asyncio
 import logging
+import os
 import re
 import time
-from datetime import datetime
+from datetime import timezone
 from typing import Any, Dict, List, Optional
+
+from dateutil import parser as dateutil_parser
 
 from src.adapters.base import BaseAdapter, ChunkedMessage
 from src.adapters.registry import register_adapter
@@ -17,12 +21,12 @@ from src.models.search import RetrievedMemory, SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Try to import litellm for LLM calls
+# OpenAI SDK for LLM calls (matches env.py's LLMClient pattern)
 try:
-    import litellm
-    HAS_LITELLM = True
+    from openai import AsyncOpenAI
+    HAS_OPENAI = True
 except ImportError:
-    HAS_LITELLM = False
+    HAS_OPENAI = False
 
 # LoCoMo grounding rules for answer generation (same as mindmemos_eval)
 LOCOMO_ANSWER_GROUNDING_RULES = """# LoCoMo memory grounding rules
@@ -84,54 +88,15 @@ numbers, dates, places, teams, programming languages, image captions, and meal n
 """
 
 
-def _parse_locomo_datetime(date_str: str) -> Optional[datetime]:
-    """Parse LoCoMo datetime string to datetime object.
+def session_timestamp_millis(raw_timestamp: str) -> int:
+    """Parse a LoCoMo session date as a millisecond timestamp.
 
-    Handles formats like:
-    - "1:56 pm on 8 May, 2023"
-    - "1:56 pm on 8 May 2023"
-    - "2023-05-08" (ISO format - defaults to 22:00:00 if no time provided)
+    Verbatim from env.py:284-287.
     """
-    if not date_str:
-        return None
-
-    date_str = date_str.strip()
-
-    # Try LoCoMo natural language formats (these have explicit time)
-    formats_with_time = [
-        "%I:%M %p on %d %B, %Y",    # "1:56 pm on 8 May, 2023"
-        "%I:%M %p on %d %B %Y",    # "1:56 pm on 8 May 2023"
-    ]
-
-    for fmt in formats_with_time:
-        try:
-            return datetime.strptime(date_str, fmt)
-        except ValueError:
-            continue
-
-    # Try ISO format - if no time provided, default to 22:00:00
-    try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        return dt.replace(hour=22, minute=0, second=0)
-    except ValueError:
-        pass
-
-    return None
-
-
-def _session_timestamp_millis(date_str: str) -> Optional[int]:
-    """Parse a LoCoMo session date string and return milliseconds timestamp.
-
-    Same logic as LoCoMo env.py session_timestamp_millis.
-    """
-    dt = _parse_locomo_datetime(date_str)
-    if dt is None:
-        return None
-    # Assume UTC if no timezone info
-    from datetime import timezone
+    dt = dateutil_parser.parse(raw_timestamp)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
+    return int(dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
 # LoCoMo context building helpers (same as mindmemos_eval)
@@ -272,7 +237,8 @@ def _extract_answer(full_response: str) -> tuple[str, str]:
     return answer.strip(), chain_of_thought
 
 
-# Try to import mindmemos_sdk, fall back to httpx if not available
+# Try to import mindmemos_sdk. Must run inside the MindMemOS .venv where the SDK
+# and its dependencies (httpx, pydantic) are installed.
 try:
     from mindmemos_sdk.memory import AsyncMemoryClient, MemorySearchHit
     from mindmemos_sdk.transport import AsyncHttpTransport
@@ -298,36 +264,91 @@ class MindMemOSAdapter(BaseAdapter):
         self.stats_collector = stats_collector
 
         # MindMemOS API configuration
+        # Prefer env var over config because the builder sets MINDMEMOS_API_KEY
+        # AFTER config YAML is loaded (env var resolution already happened).
         self.api_base_url = config.get("api_base_url", "http://127.0.0.1:8000")
-        self.api_key = config.get("api_key", "dev-api-key-001")
+        self.api_key = os.environ.get("MINDMEMOS_API_KEY") or config.get("api_key", "dev-api-key-001")
+        self.memory_algorithm = config.get("memory_algorithm", "vanilla")
         self.timeout = config.get("timeout", 120.0)
         self.search_top_k = int(config.get("search_top_k", 50))
         self.rerank = bool(config.get("rerank", False))
         self.search_strategy = config.get("search_strategy", "agentic")
 
-        # LLM configuration for answer generation
+        # LLM configuration for answer generation (matches env.py's LLMConfig)
         llm_config = config.get("llm", {})
-        self.llm_provider = llm_config.get("provider", "openai")
         self.llm_model = llm_config.get("model", "deepseek-chat")
         self.llm_api_key = llm_config.get("api_key", "")
         self.llm_base_url = llm_config.get("base_url", "https://openrouter.ai/api/v1")
-        self.llm_temperature = llm_config.get("temperature", 0)
+        self.llm_temperature = llm_config.get("temperature", 0.0)
         self.llm_max_tokens = llm_config.get("max_tokens", 32768)
+        self.llm_timeout = float(llm_config.get("timeout", 600.0))
+        self.llm_max_retries = int(llm_config.get("max_retries", 5))
+        self.llm_retry_backoff = float(llm_config.get("retry_backoff", 1.0))
 
-        # HTTP client (for non-SDK fallback)
+        # HTTP client (lazy init)
         self._client: Optional[Any] = None
+        # OpenAI client (lazy init, matches env.py's LLMClient pattern)
+        self._llm_client: Optional[AsyncOpenAI] = None
+
+        # Map conversation_id (person name) → conv_N index (matches official env.py)
+        self._conv_id_map: dict[str, str] = {}
+        self._conv_counter = 0
 
         # Track added memories count
         self._total_memories_added = 0
 
-        logger.info(f"MindMemOS Adapter initialized")
+        logger.info("MindMemOS Adapter initialized")
         logger.info(f"  API URL: {self.api_base_url}")
+        logger.info(f"  Memory algorithm: {self.memory_algorithm}")
         logger.info(f"  Search TopK: {self.search_top_k}")
         logger.info(f"  Search Strategy: {self.search_strategy}")
         logger.info(f"  Rerank: {self.rerank}")
         logger.info(f"  Using SDK: {HAS_SDK}")
-        logger.info(f"  Using litellm: {HAS_LITELLM}")
-        logger.info(f"  LLM: {self.llm_provider}/{self.llm_model}")
+        logger.info(f"  Using OpenAI: {HAS_OPENAI}")
+        logger.info(f"  LLM: {self.llm_model}")
+
+    def _ensure_llm_client(self) -> "AsyncOpenAI":
+        """Get or create OpenAI async client (matches env.py's LLMClient._ensure_client)."""
+        if self._llm_client is not None:
+            return self._llm_client
+        if not HAS_OPENAI:
+            raise RuntimeError(
+                "The 'openai' package is required for LLM calls. Install with: pip install openai"
+            )
+        self._llm_client = AsyncOpenAI(
+            api_key=self.llm_api_key,
+            base_url=self.llm_base_url,
+            timeout=self.llm_timeout,
+        )
+        return self._llm_client
+
+    async def _complete_llm(self, messages: list[dict], **overrides) -> str:
+        """Call LLM with retry (matches env.py's LLMClient._create_completion)."""
+        client = self._ensure_llm_client()
+        params: dict[str, Any] = {
+            "model": self.llm_model,
+            "messages": messages,
+        }
+        if self.llm_temperature is not None:
+            params["temperature"] = self.llm_temperature
+        if self.llm_max_tokens is not None:
+            params["max_tokens"] = self.llm_max_tokens
+        params.update(overrides)
+
+        attempts = self.llm_max_retries + 1
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                response = await client.chat.completions.create(**params)
+                return response.choices[0].message.content or ""
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(self.llm_retry_backoff * (2 ** attempt))
+
+        raise RuntimeError(
+            f"LLM completion failed after {attempts} attempts: {last_exc}"
+        ) from last_exc
 
     async def _get_client(self) -> "AsyncMemoryClient":
         """Get or create SDK client."""
@@ -351,11 +372,34 @@ class MindMemOSAdapter(BaseAdapter):
             await self._client._transport.aclose()
             self._client = None
 
+    def _to_user_id(self, conversation_id: str) -> str:
+        """Map a person-name conversation_id to ``conv_N`` (matches official env.py)."""
+        if conversation_id not in self._conv_id_map:
+            self._conv_id_map[conversation_id] = f"conv_{self._conv_counter}"
+            self._conv_counter += 1
+        return self._conv_id_map[conversation_id]
+
+    @staticmethod
+    def _extract_session_key(session_id: Optional[str]) -> Optional[str]:
+        """Extract the pure session key from a compound session_id.
+
+        Pipeline creates session_id as "conv_id:session_N", but the official
+        LoCoMo metadata expects just "session_N".  Returns the raw value
+        unchanged if it does not contain a colon.
+        """
+        if not session_id:
+            return None
+        if ":" in session_id:
+            return session_id.split(":", 1)[1]
+        return session_id
+
     async def add_chunks(self, chunks: List[ChunkedMessage], **kwargs) -> Dict[str, Any]:
         """
-        Add chunks to MindMemOS memory.
+        Add chunks to MindMemOS memory — one ``/v1/memory/add`` call per chunk.
 
-        Each ChunkedMessage becomes one add call.
+        Each chunk represents one LoCoMo **session** (all messages from a single
+        session share the same timestamp).  This mirrors the official
+        ``LocomoEnv.add_session()`` behaviour.
         """
         if not chunks:
             return {"added": 0, "memories": 0}
@@ -368,32 +412,34 @@ class MindMemOSAdapter(BaseAdapter):
 
         for chunk in chunks:
             messages = []
-            # Use session-level timestamp for all messages (same as LoCoMo)
-            # Pipeline passes timestamp in seconds, MindMemOS expects milliseconds
+            # Parse session_time_str via dateutil (matches env.py session_timestamp_millis)
             session_timestamp_ms = None
-            if chunk.timestamp:
-                # Prefer chunk.timestamp (Unix seconds, unambiguous)
-                if isinstance(chunk.timestamp, datetime):
-                    session_timestamp_ms = int(chunk.timestamp.timestamp() * 1000)
-                else:
+            if chunk.session_time_str:
+                try:
+                    session_timestamp_ms = session_timestamp_millis(chunk.session_time_str)
+                except Exception:
+                    logger.warning(
+                        f"Failed to parse session_time_str '{chunk.session_time_str}' "
+                        f"for {chunk.conversation_id}, falling back to chunk.timestamp"
+                    )
+            # Fallback: chunk.timestamp (Unix seconds) → milliseconds
+            if session_timestamp_ms is None and chunk.timestamp:
+                if isinstance(chunk.timestamp, int):
                     session_timestamp_ms = int(chunk.timestamp * 1000)
-            elif chunk.session_time_str:
-                # Fallback to session_time_str (LoCoMo datetime string like "1:56 pm on 8 May, 2023")
-                session_timestamp_ms = _session_timestamp_millis(chunk.session_time_str)
+                else:
+                    session_timestamp_ms = int(chunk.timestamp.timestamp() * 1000)
 
             for msg in chunk.messages:
-                # Use speaker_name as role, default to "user"
                 role = msg.speaker_name or "user"
-                # Combine content with blip_caption and query (same as LoCoMo _message_text)
                 content = msg.content or ""
-                # blip_caption and query can be in metadata (from loader) or direct attributes (from locomo loader)
-                blip_caption = getattr(msg, 'blip_caption', None) or (msg.metadata.get("blip_caption") if msg.metadata else None)
-                query = getattr(msg, 'query', None) or (msg.metadata.get("query") if msg.metadata else None)
+                blip_caption = (getattr(msg, 'blip_caption', None)
+                                or (msg.metadata.get("blip_caption") if msg.metadata else None))
+                query = (getattr(msg, 'query', None)
+                         or (msg.metadata.get("query") if msg.metadata else None))
                 if blip_caption:
                     content += f" [Shared image: {blip_caption}]"
                 if query:
                     content += f" [Image context: {query}]"
-                # Strip speaker prefix (same as LoCoMo strip_speaker_prefix)
                 text = content
                 for prefix in ("User: ", "Assistant: ", "user: ", "assistant: "):
                     if text.startswith(prefix):
@@ -409,12 +455,14 @@ class MindMemOSAdapter(BaseAdapter):
                 continue
 
             try:
-                metadata = {"locomo_session_key": chunk.session_id} if chunk.session_id else None
+                # Extract pure session key (“session_1”) from compound id
+                session_key = self._extract_session_key(chunk.session_id)
+                metadata = {"locomo_session_key": session_key} if session_key else None
                 result = await client.add(
                     messages=messages,
-                    user_id=chunk.conversation_id,
+                    user_id=self._to_user_id(chunk.conversation_id),
                     mode="sync",
-                    session_id=chunk.conversation_id,
+                    session_id=self._to_user_id(chunk.conversation_id),
                     metadata=metadata,
                 )
                 total_added += 1
@@ -428,7 +476,7 @@ class MindMemOSAdapter(BaseAdapter):
         self._total_memories_added += total_memories
 
         logger.info(
-            f"ADD completed: {total_added} chunks, {total_memories} memories, {elapsed:.2f}s"
+            f"ADD completed: {total_added} sessions, {total_memories} memories, {elapsed:.2f}s"
         )
 
         return {
@@ -450,14 +498,15 @@ class MindMemOSAdapter(BaseAdapter):
 
         try:
             client = await self._get_client()
+            user_id = self._to_user_id(conversation_id)
             search_result = await client.search(
                 query=query,
-                user_id=conversation_id,
+                user_id=user_id,
                 top_k=self.search_top_k,
                 search_strategy=self.search_strategy,
                 rerank=self.rerank,
-                filters={"user_id": conversation_id},
-                session_id=conversation_id,
+                filters={"user_id": user_id},
+                session_id=user_id,
             )
 
             elapsed = time.time() - start_time
@@ -523,11 +572,20 @@ class MindMemOSAdapter(BaseAdapter):
     ) -> str:
         """
         Generate answer using LLM given query and retrieved context.
-        Uses env.py's _format_memory_for_answering and build_answer_prompt
-        with raw MemorySearchHit objects for exact LoCoMo behavior.
+
+        Verbatim from env.py's LocomoEnv.answer():
+        1. Format raw MemorySearchHit objects with _format_memory_for_answering()
+        2. Build LoCoMo prompt with build_answer_prompt()
+        3. Call answer LLM via _complete_llm() (matches env.py's LLMClient.complete())
+        4. Extract <answer> tag via _extract_answer()
         """
-        if not HAS_LITELLM:
-            logger.warning("litellm not available, returning context as answer")
+        if not HAS_OPENAI:
+            logger.warning("openai package not available, returning formatted context")
+            search_result = kwargs.get("search_result")
+            if search_result and hasattr(search_result, 'results'):
+                raw_hits = [r.metadata.get("raw") for r in search_result.results]
+                raw_hits = [h for h in raw_hits if h is not None]
+                return "\n\n".join([_format_memory_for_answering(hit) for hit in raw_hits])
             return context
 
         if not self.llm_api_key:
@@ -544,23 +602,13 @@ class MindMemOSAdapter(BaseAdapter):
             answer_template = self.config.get("answer_template", None)
             prompt = build_answer_prompt(formatted_memories, query, answer_template)
         else:
-            memories_text = context
-            prompt = LOCOMO_ANSWER_PROMPT_EN.format(
-                grounding_rules=LOCOMO_ANSWER_GROUNDING_RULES,
-                context=memories_text,
-                question=query,
-            )
+            # Fallback: run context through build_answer_prompt for proper LoCoMo formatting
+            prompt = build_answer_prompt([context], query, self.config.get("answer_template"))
 
         try:
-            response = await litellm.acompletion(
-                model=f"{self.llm_provider}/{self.llm_model}",
-                messages=[{"role": "user", "content": prompt}],
-                api_key=self.llm_api_key,
-                base_url=self.llm_base_url if self.llm_base_url else None,
-                temperature=self.llm_temperature,
-                max_tokens=self.llm_max_tokens,
+            full_response = await self._complete_llm(
+                [{"role": "user", "content": prompt}]
             )
-            full_response = response["choices"][0]["message"]["content"]
             answer_text, _ = _extract_answer(full_response)
             return answer_text if answer_text else full_response
         except Exception as e:
@@ -580,6 +628,7 @@ class MindMemOSAdapter(BaseAdapter):
                 "schema_modeling",
             ],
             "api_base_url": self.api_base_url,
+            "memory_algorithm": self.memory_algorithm,
             "search_strategy": self.search_strategy,
             "using_sdk": HAS_SDK,
         }

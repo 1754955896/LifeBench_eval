@@ -63,9 +63,17 @@ class Mem0Adapter(BaseAdapter):
         # This is important for historical data import where we want exact memories
         self.infer = config.get("infer", False)
 
-        # Use high limit since we handle rate limiting ourselves
-        self.limiter = AsyncLimiter(100000, 60)
+        # Prevent pathological bursts (not a substitute for per_add_delay_seconds).
+        self.limiter = AsyncLimiter(120, 60)
         self._session: Optional[aiohttp.ClientSession] = None
+
+        # Per-conversation reference date (last session's date string),
+        # populated by add_chunks() and read by answer() to anchor temporal reasoning.
+        self._conversation_reference_date: Dict[str, str] = {}
+
+        # Per-message inter-call delay (seconds) to avoid hammering mem0.
+        # Tuned to be small but non-zero; can be overridden via config["per_add_delay_seconds"].
+        self.per_add_delay_seconds: float = float(config.get("per_add_delay_seconds", 0.0))
 
     @property
     def _headers(self) -> Dict[str, str]:
@@ -94,8 +102,18 @@ class Mem0Adapter(BaseAdapter):
     ) -> Dict[str, Any]:
         """Ingest message chunks via Mem0 API.
 
-        Each ChunkedMessage (session) is sent as a separate API call,
-        preserving its session-level timestamp.
+        Each ChunkedMessage (session) is **split into per-turn** calls to
+        align with the official mem0 evaluation pipeline (CHUNK_SIZE=1). This
+        lets mem0's LLM extractor see one turn at a time, producing finer-grained
+        facts than feeding a whole session in one call.
+
+        The session-level timestamp is reused for every turn in the session
+        (mem0 OSS rejects explicit ``timestamp`` payloads anyway, but we keep
+        the field for parity with the official client).
+
+        While ingesting, the latest session date per conversation is recorded
+        so ``answer()`` can anchor temporal reasoning to the real reference
+        date instead of falling back to a hard-coded year.
 
         Args:
             chunks: List of ChunkedMessage objects
@@ -106,49 +124,178 @@ class Mem0Adapter(BaseAdapter):
         """
         total_added = 0
         total_failed = 0
+        total_turns = 0
+        latest_session_date_per_conv: Dict[str, str] = {}
 
         for chunk in chunks:
             if not chunk.messages:
                 continue
-            messages = [
-                {"role": msg.speaker_name, "content": f"{msg.speaker_name}: {msg.content}"}
-                for msg in chunk.messages
-            ]
-            if not messages:
+            if not chunk.conversation_id:
                 continue
 
-            # Each session is sent separately to preserve its timestamp
-            success = await self._add_messages(
-                messages,
-                chunk.conversation_id,
-                timestamp=chunk.timestamp,
+            session_ref_date = self._format_session_reference_date(
+                chunk.timestamp, chunk.session_time_str
             )
+            if session_ref_date:
+                prev = latest_session_date_per_conv.get(chunk.conversation_id)
+                if prev is None or session_ref_date > prev:
+                    latest_session_date_per_conv[chunk.conversation_id] = session_ref_date
 
-            if success:
-                total_added += 1
-            else:
-                total_failed += 1
+            # Build per-session metadata. We pass both a short label
+            # (e.g. "May 8, 2023") and an ISO 8601 timestamp so the answer
+            # prompt can pick the most useful representation. dia_id from
+            # the first turn is preserved when present.
+            session_iso = (
+                datetime.fromtimestamp(int(chunk.timestamp), tz=timezone.utc).isoformat()
+                if chunk.timestamp
+                else None
+            )
+            session_metadata: Dict[str, Any] = {}
+            if session_ref_date:
+                session_metadata["session_date"] = session_ref_date
+            if session_iso:
+                session_metadata["session_iso"] = session_iso
+            if chunk.session_id:
+                session_metadata["session_id"] = chunk.session_id
+            # Keep raw original time string for forensic purposes.
+            if chunk.session_time_str:
+                session_metadata["session_time_original"] = chunk.session_time_str
+
+            for msg in chunk.messages:
+                content = self._render_message_content(msg, session_ref_date)
+                if not content:
+                    continue
+
+                # Per-turn metadata: each turn carries session date + its own
+                # dia_id. Storing on the memory itself (rather than only on the
+                # turn text) means search results still surface the date even
+                # when mem0's LLM extractor rewrites or omits it.
+                turn_metadata = dict(session_metadata)
+                dia_id = getattr(msg, "dia_id", None)
+                if dia_id:
+                    turn_metadata["dia_id"] = dia_id
+
+                # Per-turn add: one message per API call, mirroring the official
+                # ``session_to_chunks(CHUNK_SIZE=1)`` behavior.
+                turn_payload = [{"role": "user", "content": content}]
+                success = await self._add_messages(
+                    turn_payload,
+                    chunk.conversation_id,
+                    timestamp=chunk.timestamp,
+                    metadata=turn_metadata or None,
+                )
+                total_turns += 1
+                if success:
+                    total_added += 1
+                else:
+                    total_failed += 1
+
+                if self.per_add_delay_seconds > 0:
+                    await asyncio.sleep(self.per_add_delay_seconds)
+
+        # Persist per-conversation reference dates for answer() to read.
+        self._conversation_reference_date.update(latest_session_date_per_conv)
 
         return {
             "type": "mem0",
             "mode": self.mode,
             "total_chunks": len(chunks),
+            "total_turns": total_turns,
             "added": total_added,
             "failed": total_failed,
         }
+
+    @staticmethod
+    def _render_message_content(msg, session_date_label: Optional[str] = None) -> str:
+        """Render a single message as the text fed to mem0's extractor.
+
+        Mirrors the official ``session_to_chunks`` formatting: prepend the
+        speaker name, and append an inline image tag when a blip caption
+        and/or query are present.
+
+        Additionally, when ``session_date_label`` is supplied (e.g. "May 8, 2023"
+        or "2023-05-08"), it is prepended in brackets. This is a defense-in-depth
+        measure against mem0's LLM extractor replacing original dates with the
+        current ingestion date. With the date in the turn text itself, the
+        extractor preserves it inside the resulting memory.
+        """
+        speaker = getattr(msg, "speaker_name", "") or ""
+        text = (getattr(msg, "content", "") or "").strip()
+        metadata = getattr(msg, "metadata", None) or {}
+        blip = metadata.get("blip_caption", "") if isinstance(metadata, dict) else ""
+        query = metadata.get("query", "") if isinstance(metadata, dict) else ""
+
+        photo_tag = ""
+        if query and blip:
+            photo_tag = f"[Sharing image - query: {query}. The image shows: {blip}]"
+        elif query:
+            photo_tag = f"[Sharing image - query for: {query}]"
+        elif blip:
+            photo_tag = f"[Sharing image that shows: {blip}]"
+
+        if photo_tag:
+            text = f"{text} {photo_tag}".strip() if text else photo_tag
+        if not text:
+            return ""
+
+        prefix_parts = []
+        if session_date_label:
+            # Self-describing wrapper so the LLM extractor (and any future
+            # prompt consumer) understands the date is metadata about the
+            # *content* that follows, not part of the speaker's utterance.
+            prefix_parts.append(f"(Conversation date: {session_date_label})")
+        if speaker:
+            prefix_parts.append(f"{speaker}:")
+        prefix = " ".join(prefix_parts) + " "
+
+        return f"{prefix}{text}" if prefix else text
+
+    @staticmethod
+    def _format_session_reference_date(
+        timestamp: Optional[int], session_time_str: Optional[str]
+    ) -> Optional[str]:
+        """Convert a session timestamp into a human-readable date string.
+
+        Preference order:
+          1. The original LoCoMo-style session_time_str ("1:56 pm on 8 May, 2023")
+          2. Unix epoch ``timestamp`` parsed as UTC date
+        Returns None if neither is usable.
+        """
+        if session_time_str:
+            for fmt in ("%I:%M %p on %d %B, %Y", "%I:%M %p on %d %b, %Y",
+                        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(session_time_str[:35], fmt).strftime("%B %d, %Y")
+                except ValueError:
+                    continue
+            # Last resort: keep the original string if we can pull a year out.
+            if any(ch.isdigit() for ch in session_time_str):
+                return session_time_str
+
+        if timestamp:
+            try:
+                return datetime.fromtimestamp(int(timestamp), tz=timezone.utc).strftime("%B %d, %Y")
+            except (ValueError, OverflowError, OSError):
+                return None
+        return None
 
     async def _add_messages(
         self,
         messages: List[Dict[str, str]],
         user_id: str,
         timestamp: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Add messages to Mem0.
 
         Args:
             messages: List of message dicts [{"role": ..., "content": ...}]
             user_id: User ID for this conversation
-            timestamp: Optional unix timestamp
+            timestamp: Optional unix timestamp (rejected by mem0 OSS but kept
+                for parity with the official client).
+            metadata: Optional dict of metadata to attach to the memory
+                (e.g. {"session_date": "May 8, 2023", "dia_id": "..."}).
 
         Returns:
             True if successful, False otherwise
@@ -158,6 +305,8 @@ class Mem0Adapter(BaseAdapter):
         payload: Dict[str, Any] = {"messages": messages, "user_id": user_id, "infer": self.infer}
         if timestamp is not None:
             payload["timestamp"] = timestamp
+        if metadata:
+            payload["metadata"] = metadata
 
         for attempt in range(self.max_retries):
             try:
@@ -272,7 +421,7 @@ class Mem0Adapter(BaseAdapter):
         payload: Dict[str, Any] = {
             "query": query,
             "user_id": conversation_id,
-            "limit": top_k,
+            "top_k": top_k,             # mem0 server expects top_k (NOT limit)
             "rerank": rerank,
         }
         if score_debug:
@@ -280,6 +429,12 @@ class Mem0Adapter(BaseAdapter):
 
         if self.mode == "cloud":
             payload["filters"] = {"user_id": conversation_id}
+            payload["top_k"] = top_k
+        else:
+            # OSS path: put user_id inside filters and drop the top-level
+            # user_id (server treats top-level user_id as deprecated for search).
+            payload["filters"] = {"user_id": conversation_id}
+            payload.pop("user_id", None)
 
         for attempt in range(self.max_retries):
             try:
@@ -308,6 +463,14 @@ class Mem0Adapter(BaseAdapter):
 
                 normalized = []
                 for r in results:
+                    # Pass through the metadata dict that mem0 stored with the
+                    # memory. We expose it so the answer prompt can recover the
+                    # original session_date even when ``created_at`` is just
+                    # the ingestion timestamp.
+                    raw_metadata = r.get("metadata") or {}
+                    if not isinstance(raw_metadata, dict):
+                        raw_metadata = {}
+
                     entry = RetrievedMemory(
                         content=r.get("memory", r.get("data", "")),
                         score=r.get("score", 0),
@@ -315,6 +478,11 @@ class Mem0Adapter(BaseAdapter):
                             "id": r.get("id", ""),
                             "created_at": r.get("created_at"),
                             "updated_at": r.get("updated_at"),
+                            "session_date": raw_metadata.get("session_date"),
+                            "session_iso": raw_metadata.get("session_iso"),
+                            "session_id": raw_metadata.get("session_id"),
+                            "session_time_original": raw_metadata.get("session_time_original"),
+                            "dia_id": raw_metadata.get("dia_id"),
                         }
                     )
                     normalized.append(entry)
@@ -415,7 +583,13 @@ class Mem0Adapter(BaseAdapter):
             return "Error: No LLM API key configured"
 
         search_result = kwargs.get("search_result")
-        reference_date = kwargs.get("reference_date", "2023")
+        # Prefer the conversation's real last-session date (recorded during add_chunks);
+        # fall back to caller-provided reference_date; finally to a generic year.
+        reference_date = (
+            self._conversation_reference_date.get(conversation_id)
+            or kwargs.get("reference_date")
+            or "2023"
+        )
 
         # Build memories text with chronological sorting if search_result available
         if search_result and hasattr(search_result, "results"):
@@ -452,6 +626,8 @@ Confirm each relevant memory is about the correct person/entity. If the question
 These conversations took place around {reference_date}. All events occurred in 2022-2024.
 - Calculate time relative to this date, NOT today. Never output 2025 or 2026.
 - Use dates explicitly stated in memory text. Do not invent or estimate dates.
+- **The DATE prefix on each memory is the date the original conversation took place.** Trust it for "when did X happen" questions.
+- **IGNORE any date that appears only in the "ingestion time" fallback** — those are unreliable (they reflect when the memory was stored, not when the conversation happened).
 - When a question asks what someone "shared" or "mentioned" on a date, that date is when they TALKED about it — look for events shortly BEFORE that date.
 - For "how long" questions, find the start and end dates explicitly, then compute the duration. Do not guess.
 - TEMPORAL DISAMBIGUATION: When you find MULTIPLE instances of similar events at different dates, enumerate them all with their dates before picking. If the question uses past tense + "the" → select the instance closest to (and before) the reference date. If future tense ("plans to", "going to") → select the earliest planned date. NEVER default to the first-mentioned or highest-scored instance — the DATE determines the answer.
@@ -463,6 +639,7 @@ If you found items during reasoning that you're tempted to exclude from your ans
 
 ## Step 7: COMMIT AND ANSWER
 Give a direct, specific answer. NEVER say "not specified", "not mentioned", "no record", or "the memories don't say" — if ANY memory contains relevant information, give the best answer from available evidence. No hedging, no caveats. If the question asks for a list, include ALL items found. NEVER return an empty answer when relevant memories exist.
+- **ANTI-HALLUCINATION for dates**: When a memory's text mentions a date (e.g. "visited Paris on May 8, 2023"), use THAT date verbatim — DO NOT substitute the current year, today, or the ingestion date. If two memories give different dates for the same event, trust the one whose date prefix matches.
 - NEVER generate specific names, titles, places, or dates that do not appear in any memory above. If no memory contains the specific detail the question asks for, answer with what the memories DO contain rather than guessing.
 - For open-domain/opinion questions ("Would X do Y?", "Is X considered Z?"):
   * Follow the DIRECT causal reasoning in the memories. Do NOT construct elaborate counter-arguments.
@@ -484,41 +661,28 @@ Question: {query}
 
 Work through Steps 1-7, then give your final answer after "ANSWER:"."""
 
-        if provider == "openai":
-            url = f"{base_url}/chat/completions"
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-        else:
-            url = f"{base_url}/chat/completions"
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
+        url = f"{base_url}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
 
         try:
             async with self.limiter:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json=payload, headers=headers) as resp:
-                        if resp.status >= 500:
-                            raise aiohttp.ClientResponseError(
-                                resp.request_info, resp.history, status=resp.status
-                            )
-                        resp.raise_for_status()
-                        data = await resp.json()
+                session = await self._get_session()
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status >= 500:
+                        raise aiohttp.ClientResponseError(
+                            resp.request_info, resp.history, status=resp.status
+                        )
+                    resp.raise_for_status()
+                    data = await resp.json()
 
             if isinstance(data, dict) and "choices" in data:
                 return data["choices"][0]["message"]["content"]
@@ -561,18 +725,37 @@ Work through Steps 1-7, then give your final answer after "ANSWER:"."""
                     continue
             return iso_str[:10]
 
-        # Sort chronologically (oldest first)
-        sorted_results = sorted(results, key=lambda x: x.metadata.get("created_at", "") or "")
+        # Sort chronologically (oldest first). Prefer session_iso (real conversation
+        # date attached at ingestion) over created_at (the ingestion timestamp
+        # itself, which would always read as today/yesterday).
+        def _sort_key(x):
+            iso = x.metadata.get("session_iso") or ""
+            if iso:
+                return iso
+            return x.metadata.get("created_at", "") or ""
+
+        sorted_results = sorted(results, key=_sort_key)
         lines = [
             "The following memories are presented in chronological order (oldest to newest).",
+            "Each memory is prefixed with the date it occurred in the original conversation.",
             "",
         ]
         for result in sorted_results:
-            created_at = result.metadata.get("created_at", "")
-            if created_at:
-                date_str = _to_human_date(created_at)
-                lines.append(f"({date_str}) {result.content}")
+            session_iso = result.metadata.get("session_iso")
+            session_date = result.metadata.get("session_date")
+            if session_iso:
+                date_str = _to_human_date(session_iso)
+            elif session_date:
+                date_str = session_date
             else:
-                lines.append(f"(unknown date) {result.content}")
+                # Fallback to created_at — this is the ingestion time, not the
+                # real conversation date, so mark it explicitly so the answer
+                # LLM knows not to treat it as authoritative.
+                created_at = result.metadata.get("created_at", "")
+                if created_at:
+                    date_str = f"{_to_human_date(created_at)} (ingestion time, not original conversation date)"
+                else:
+                    date_str = "unknown date"
+            lines.append(f"({date_str}) {result.content}")
 
         return "\n".join(lines)

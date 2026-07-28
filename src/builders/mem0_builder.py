@@ -2,16 +2,93 @@
 Mem0 builder - starts Mem0 OSS server via docker compose.
 """
 
+import asyncio
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from src.builders.base_builder import BaseBuilder
 from src.builders.registry import register_builder
+
+
+# Provider-specific config-key mapping. mem0ai's provider config classes expect
+# a provider-named base_url field (deepseek_base_url, openai_base_url, ...).
+# We let users write a generic "base_url" in YAML and translate it here.
+_BASE_URL_KEYS = {
+    "deepseek": "deepseek_base_url",
+    "openai": "openai_base_url",
+    "anthropic": "anthropic_base_url",
+    "gemini": "gemini_base_url",
+}
+
+_ENV_REF = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}")
+
+
+def _resolve_env(value: Any) -> Any:
+    """Expand ${VAR} and ${VAR:default} references in string values."""
+    if isinstance(value, str):
+        def _sub(m: re.Match) -> str:
+            var, default = m.group(1), m.group(2)
+            return os.environ.get(var, default if default is not None else m.group(0))
+        return _ENV_REF.sub(_sub, value)
+    if isinstance(value, dict):
+        return {k: _resolve_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env(v) for v in value]
+    return value
+
+
+def _map_config(provider: str, side_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a generic runtime_config block into a provider-specific one.
+
+    Generic YAML shape:
+        provider: "deepseek"
+        model: "..."
+        api_key: "..."
+        base_url: "..."
+        temperature: 0.1
+        max_tokens: 32768
+
+    Provider-specific shape (sent to mem0 /configure):
+        model: "..."
+        api_key: "..."
+        deepseek_base_url: "..."   # field renamed by provider
+        temperature: 0.1
+        max_tokens: 32768
+    """
+    resolved = _resolve_env(side_cfg)
+    base_url_key = _BASE_URL_KEYS.get(provider)
+    out: Dict[str, Any] = {}
+    for k, v in resolved.items():
+        if k == "provider":
+            continue
+        if k == "base_url" and base_url_key:
+            out[base_url_key] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _summarize(block: Optional[Dict[str, Any]]) -> str:
+    """One-line summary for logging: 'provider@base_url model=...'"""
+    if not block:
+        return "(unchanged)"
+    provider = block.get("provider", "?")
+    cfg = block.get("config", {}) or {}
+    base_url = (
+        cfg.get("deepseek_base_url")
+        or cfg.get("openai_base_url")
+        or cfg.get("anthropic_base_url")
+        or cfg.get("gemini_base_url")
+        or "?"
+    )
+    model = cfg.get("model", "?")
+    return f"{provider}@{base_url} model={model}"
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +139,6 @@ class Mem0Builder(BaseBuilder):
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
         self.docker_compose = config.get("docker_compose")
-        self.env_template = config.get("env_template")
         self.env_defaults = config.get("env_defaults", {})
         self.docker_wait = config.get("docker_wait", 30)
         self.post_start_script = config.get("post_start_script")
@@ -97,7 +173,25 @@ class Mem0Builder(BaseBuilder):
             logger.info(f"Waiting {self.docker_wait}s for services to be ready...")
             time.sleep(self.docker_wait)
 
-        # 3. Run post-start script
+        # 3. Fix pgvector table dimension mismatch from prior runs.
+        # The pgvector volume persists across restarts. If a previous run
+        # created the table with a different embedding size (e.g. 1536),
+        # inserts will fail with "expected N dimensions, not M". We drop
+        # the table so it is recreated with the correct dims on first add.
+        if not await self._fix_pgvector_dims(project_root):
+            logger.warning("Failed to fix pgvector dimensions; insert may fail")
+
+        # 4. Push runtime LLM/embedder config to mem0 server via POST /configure.
+        # The server's DEFAULT_CONFIG hardcodes provider=openai pointing at
+        # api.openai.com (unreachable from most networks); override with
+        # the user-defined providers from runtime_config.
+        if not await self._configure_server(project_root):
+            logger.warning(
+                "Failed to push runtime LLM/embedder config; the server's "
+                "default OpenAI config will likely fail at first add()."
+            )
+
+        # 5. Run post-start script
         if self.post_start_script:
             if not await self._run_post_start(project_root):
                 logger.warning("Post-start script failed, continuing anyway")
@@ -187,6 +281,13 @@ DASHSCOPE_EMBEDDING_URL={env_config['vectorize_base_url']}
 DASHSCOPE_EMBEDDING_MODEL={env_config['vectorize_model']}"""
             logger.info(f"  Embedding: SiliconFlow {env_config['vectorize_model']} @ {env_config['vectorize_base_url']}")
 
+        # Resolve the desired embedding vector size. Default to whatever the
+        # framework .env says (VECTORIZE_DIMENSIONS), falling back to 1536.
+        # This gets injected into mem0 server's DEFAULT_CONFIG so the pgvector
+        # table is sized correctly on first startup.
+        embed_dims = int(env_config.get('vectorize_dimensions') or
+                         os.environ.get('MEM0_EMBEDDING_DIMS', '1536'))
+
         env_content = f"""# Mem0 Server Environment Configuration
 # Generated by Mem0Builder from LifeBench_eval/.env
 
@@ -194,13 +295,19 @@ DASHSCOPE_EMBEDDING_MODEL={env_config['vectorize_model']}"""
 DEEPSEEK_API_KEY={env_config['llm_api_key']}
 DEEPSEEK_API_BASE={env_config['llm_base_url']}
 
+# The server's DEFAULT_CONFIG (server/main.py) hardcodes the embedder to the
+# "openai" provider. To reuse the SiliconFlow OpenAI-compatible endpoint we
+# already configured for the framework, we point OPENAI_API_KEY/BASE at it.
+# Same trick for the LLM.
+OPENAI_API_KEY={env_config['vectorize_api_key']}
+OPENAI_API_BASE={env_config['vectorize_base_url']}
+
 {embedding_config}
 
-# Qdrant Vector Store (for hybrid search with BM25)
-QDRANT_HOST=qdrant
-QDRANT_PORT=6333
-QDRANT_COLLECTION_NAME=memories
-QDRANT_ON_DISK=true
+# Vector store: the server uses pgvector via the postgres container
+# (DEFAULT_CONFIG in server/main.py). No standalone Qdrant service is started;
+# the previous QDRANT_HOST=qdrant block was a leftover that caused
+# "no such service: qdrant" on docker compose up.
 
 # PostgreSQL settings (for app data)
 POSTGRES_USER=postgres
@@ -215,7 +322,11 @@ AUTH_DISABLED=true
 
 # Default models
 MEM0_DEFAULT_LLM_MODEL={env_config['llm_model']}
-MEM0_DEFAULT_EMBEDDER_MODEL=openai
+MEM0_DEFAULT_EMBEDDER_MODEL={env_config['vectorize_model']}
+
+# Embedding dimensions — controls pgvector table size at startup.
+# Must match the dims the embedder returns (set via runtime_config too).
+MEM0_EMBEDDING_DIMS={embed_dims}
 
 # Security settings
 JWT_SECRET=test-secret-key-for-dev
@@ -276,28 +387,7 @@ MEM0_RERANKER_TOP_K=10
             else:
                 logger.info("Postgres already running")
 
-            # Start qdrant (vector DB, needed by mem0)
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "qdrant"],
-                capture_output=True,
-                text=True,
-            )
-            if "Up" not in result.stdout:
-                logger.info(f"Starting qdrant: {self.docker_compose}")
-                result = subprocess.run(
-                    ["docker", "compose", "-f", str(compose_path), "up", "-d", "qdrant"],
-                    cwd=str(compose_path.parent),
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    logger.error(f"Docker start qdrant failed: {result.stderr}")
-                    return False
-                logger.info("Qdrant started")
-            else:
-                logger.info("Qdrant already running")
-
-            # Start mem0 main app (depends on postgres and qdrant)
+            # Start mem0 main app (depends on postgres; pgvector runs inside it)
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_path), "ps", "mem0"],
                 capture_output=True,
@@ -371,6 +461,205 @@ MEM0_RERANKER_TOP_K=10
 
         logger.error("Postgres did not become healthy in 180s")
         return False
+
+    async def _fix_pgvector_dims(self, project_root: Path) -> bool:
+        """Drop the pgvector table if its column dimension doesn't match the
+        configured ``MEM0_EMBEDDING_DIMS``. The table is recreated lazily by
+        mem0 on first insert with the correct size.
+
+        Without this fix, a volume that was populated by an earlier run with
+        a different embedding size will cause ``psycopg.errors.DataException:
+        expected N dimensions, not M`` on every insert.
+        """
+        compose_path = project_root / self.docker_compose
+        compose_parent = compose_path.parent
+
+        # Read the expected dims from the .env we just wrote (or from os.environ).
+        env_path = compose_parent / ".env"
+        expected_dims: Optional[int] = None
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("MEM0_EMBEDDING_DIMS="):
+                    try:
+                        expected_dims = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+                    break
+        if expected_dims is None:
+            expected_dims = int(os.environ.get("MEM0_EMBEDDING_DIMS", "0"))
+        if expected_dims <= 0:
+            logger.info("MEM0_EMBEDDING_DIMS not set; skipping pgvector dim check")
+            return True
+
+        pg_user = os.environ.get("POSTGRES_USER", "postgres")
+        pg_db = os.environ.get("POSTGRES_DB", "postgres")
+        psql = [
+            "docker", "compose", "-f", str(compose_path),
+            "exec", "-T", "postgres",
+            "psql", "-U", pg_user, "-d", pg_db,
+            "-c",
+        ]
+
+        # Check if the memories table exists and what its vector dim is.
+        try:
+            result = subprocess.run(
+                psql + [
+                    "SELECT atttypmod FROM pg_attribute "
+                    "WHERE attrelid = 'memories'::regclass AND attname = 'vector';"
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                if "does not exist" in (result.stderr or ""):
+                    logger.info("pgvector table does not exist yet; no fix needed")
+                    return True
+                logger.warning("pgvector dim check failed: %s", result.stderr)
+                return True  # not fatal — proceed and let insert fail if needed
+
+            dim_str = ""
+            for line in result.stdout.strip().split("\n"):
+                stripped = line.strip()
+                if stripped.isdigit():
+                    dim_str = stripped
+                    break
+            if not dim_str:
+                logger.warning("Could not parse vector dim from: %r", result.stdout)
+                return True
+
+            actual_dims = int(dim_str)
+            if actual_dims == expected_dims:
+                logger.info(
+                    "pgvector table dims match: expected=%d actual=%d",
+                    expected_dims, actual_dims,
+                )
+                return True
+
+            logger.warning(
+                "pgvector dimension mismatch: expected=%d actual=%d. "
+                "Dropping table so it is recreated correctly.",
+                expected_dims, actual_dims,
+            )
+            drop = subprocess.run(
+                psql + ["DROP TABLE IF EXISTS memories CASCADE;"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if drop.returncode != 0:
+                logger.error("Failed to drop memories table: %s", drop.stderr)
+                return False
+            logger.info("Dropped stale pgvector table; will be recreated on first insert")
+            return True
+
+        except Exception as exc:
+            logger.warning("pgvector dim check error (non-fatal): %s", exc)
+            return True
+
+    async def _configure_server(self, project_root: Path) -> bool:
+        """Push runtime LLM/embedder config to the mem0 server via POST /configure.
+
+        Why this is needed:
+          - The server's DEFAULT_CONFIG (server/main.py) pins the LLM to the
+            "openai" provider pointing at api.openai.com, which is unreachable
+            from most networks → first /memories call times out → 502.
+          - DeepSeek's native provider is registered in mem0ai's factory but
+            was NOT in the server's BUNDLED_LLM_PROVIDERS allowlist; we added
+            "deepseek" to that tuple in server/main.py so /configure accepts it.
+
+        Auth: /configure requires admin. The admin path accepts X-API-Key
+        matching ADMIN_API_KEY (Bearer JWT would 401).
+        """
+        import aiohttp
+
+        env_path = project_root / self.docker_compose
+        env_path = env_path.parent / ".env"
+
+        # Read ADMIN_API_KEY that _prepare_env_file just wrote
+        admin_api_key = os.environ.get("MEM0_ADMIN_API_KEY", "")
+        if not admin_api_key and env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("ADMIN_API_KEY="):
+                    admin_api_key = line.split("=", 1)[1].strip()
+                    break
+
+        if not admin_api_key:
+            logger.warning("ADMIN_API_KEY not found; skipping /configure push")
+            return False
+
+        # Re-load LifeBench_eval/.env into os.environ so the payload below
+        # picks up the latest credentials.
+        _load_env_config(project_root / ".env")
+
+        host = os.environ.get("MEM0_HOST", "http://localhost:8888")
+        cfg_url = f"{host.rstrip('/')}/configure"
+
+        # Build payload from the system config's `runtime_config` block so that
+        # LLM and embedder can each pick their own provider / model / base_url /
+        # api_key independently. Field names like `base_url` map to provider-
+        # specific keys (deepseek_base_url / openai_base_url) — see _map_config.
+        payload: Dict[str, Any] = {}
+        rc = self.config.get("runtime_config", {})
+        for side in ("llm", "embedder"):
+            side_cfg = rc.get(side)
+            if not side_cfg:
+                continue
+            provider = side_cfg.get("provider", "openai")
+            config_block = _map_config(provider, side_cfg)
+            payload[side] = {"provider": provider, "config": config_block}
+
+        if not payload:
+            logger.info("runtime_config not set; keeping server DEFAULT_CONFIG")
+            return True
+
+        # Wait for the server to be ready. The mem0 server has no /health
+        # endpoint, so we poll /configure (admin-gated) until it answers 200.
+        # Probing /health alone is misleading because it 404s immediately
+        # even before the app finishes initializing, which leads to a race
+        # where the first /memories request hits a half-warm server.
+        deadline = time.monotonic() + 60
+        ready = False
+        async with aiohttp.ClientSession() as session:
+            while time.monotonic() < deadline:
+                try:
+                    async with session.get(
+                        f"{host.rstrip('/')}/configure",
+                        headers={"X-API-Key": admin_api_key},
+                        timeout=aiohttp.ClientTimeout(total=3),
+                    ) as r:
+                        if r.status == 200:
+                            await r.read()
+                            ready = True
+                            break
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    pass
+                await asyncio.sleep(1)
+            if not ready:
+                logger.error(
+                    "Timed out waiting for mem0 /configure to respond; "
+                    "server may not be fully initialized."
+                )
+                return False
+
+            headers = {"X-API-Key": admin_api_key, "Content-Type": "application/json"}
+            try:
+                async with session.post(
+                    cfg_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    body = await r.text()
+                    if r.status == 200:
+                        llm_summary = _summarize(payload.get("llm"))
+                        emb_summary = _summarize(payload.get("embedder"))
+                        logger.info(
+                            "Pushed runtime LLM/embedder config: "
+                            f"LLM={llm_summary}, embedder={emb_summary}"
+                        )
+                        return True
+                    logger.error(f"POST {cfg_url} -> {r.status}: {body[:300]}")
+                    return False
+            except Exception as exc:
+                logger.error(f"POST {cfg_url} failed: {exc}")
+                return False
 
     async def _run_post_start(self, project_root: Path) -> bool:
         """Run post-start script."""

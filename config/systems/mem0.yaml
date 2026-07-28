@@ -23,28 +23,45 @@ env_defaults:
   DASHSCOPE_EMBEDDING_URL: "${VECTORIZE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}"
   DASHSCOPE_EMBEDDING_MODEL: ${VECTORIZE_MODEL:custom}"
 
-  # Qdrant Vector Store
-  QDRANT_HOST: "qdrant"
-  QDRANT_PORT: 6333
-  QDRANT_COLLECTION_NAME: "memories"
-  QDRANT_ON_DISK: "true"
+  # Vector store: the server uses pgvector via the bundled postgres container
+  # (DEFAULT_CONFIG in server/main.py). No standalone Qdrant service is
+  # declared in docker-compose.yaml — historical QDRANT_HOST=qdrant entries
+  # were removed because they made `docker compose up` fail with
+  # "no such service: qdrant".
 
   # Postgres (for app data)
   POSTGRES_USER: "postgres"
   POSTGRES_PASSWORD: "postgres"
   POSTGRES_DB: "postgres"
 
-  # Reranker Configuration
-  MEM0_RERANKER_ENABLED: "true"
-  MEM0_RERANKER_PROVIDER: "llm_reranker"
-  MEM0_RERANKER_MODEL: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
-  MEM0_RERANKER_API_KEY: "${RERANKER_API_KEY:}"
-  MEM0_RERANKER_BASE_URL: "${RERANKER_BASE_URL:https://api.siliconflow.cn/v1}"
-  MEM0_RERANKER_TOP_K: "25"
-
-  # Default models
-  MEM0_DEFAULT_LLM_MODEL: "deepseek-chat"
-  MEM0_DEFAULT_EMBEDDER_MODEL: "custom"
+# Runtime LLM/embedder configuration pushed to mem0 server via POST /configure
+# after containers start. Each side picks its own provider / model / base_url
+# / api_key independently, so they don't have to share an endpoint.
+#
+# Provider values: "deepseek", "openai", "anthropic", "gemini" (LLM);
+#                  "openai", "gemini" (embedder).
+# "openai" provider is OpenAI-compatible and accepts any base_url.
+#
+# If a section is omitted the builder skips pushing it and the server keeps
+# its DEFAULT_CONFIG for that side.
+runtime_config:
+  llm:
+    provider: "deepseek"
+    model: "${LLM_MODEL:deepseek-chat}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://api.deepseek.com}"   # field name maps to deepseek_base_url
+    temperature: 0.1
+    max_tokens: 32768
+  embedder:
+    provider: "openai"                                       # OpenAI-compatible
+    model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
+    api_key: "${VECTORIZE_API_KEY}"
+    base_url: "${VECTORIZE_BASE_URL:https://api.siliconflow.cn/v1}"  # field name maps to openai_base_url
+    # pgvector collection was sized for 1024 dims; Qwen3-Embedding-4B's native
+    # is 2560. SiliconFlow supports Matryoshka-style server-side reduction via
+    # the `dimensions` param, and mem0's openai embedder forwards this when
+    # `embedding_dims` is set. Set to 0 / omit to use native dims.
+    embedding_dims: ${VECTORIZE_DIMENSIONS:1024}
 docker_wait: 30
 post_start_script: null
 
@@ -77,3 +94,15 @@ search:
 
 answer:
   max_retries: 3
+
+# Reranker Configuration
+MEM0_RERANKER_ENABLED: "true"
+MEM0_RERANKER_PROVIDER: "cohere"
+MEM0_RERANKER_MODEL: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
+MEM0_RERANKER_API_KEY: "${RERANKER_API_KEY:}"
+MEM0_RERANKER_BASE_URL: "${RERANKER_BASE_URL:https://api.siliconflow.cn/v1}"
+MEM0_RERANKER_TOP_K: "25"
+
+# Default models
+MEM0_DEFAULT_LLM_MODEL: "deepseek-chat"
+MEM0_DEFAULT_EMBEDDER_MODEL: "custom"
