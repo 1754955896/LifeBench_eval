@@ -1,0 +1,79 @@
+# MindMemOS System Configuration for LifeBench_eval
+
+name: "mindmemos"
+version: "1.0"
+description: "MindMemOS memory system with incremental writes, deduplication, and hybrid search"
+
+adapter: "mindmemos"
+builder: "mindmemos"
+
+# MindMemOS API configuration
+api_base_url: "${MINDMEMOS_API_BASE_URL:http://127.0.0.1:8000}"
+api_key: "${MINDMEMOS_API_KEY:dev-api-key-001}"
+api_key_002: "${MINDMEMOS_API_KEY_002:dev-api-key-002}"
+
+# Memory algorithm: vanilla or schema
+memory_algorithm: "${MINDMEMOS_MEMORY_ALGORITHM:vanilla}"
+
+# Search configuration
+search_top_k: 40
+search_strategy: "agentic"
+rerank: true
+
+# LLM configuration (for answer generation)
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-chat}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com/v1}"
+  temperature: 0.3
+  max_tokens: 32768
+
+# Embedding model configuration (for vector search)
+vectorize:
+  provider: "${VECTORIZE_PROVIDER:deepinfra}"
+  api_key: "${VECTORIZE_API_KEY}"
+  base_url: "${VECTORIZE_BASE_URL:https://api.deepinfra.com/v1}"
+  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
+  timeout: 30
+  batch_size: 256
+  max_concurrent: 5
+
+# Rerank model configuration (for result re-ranking)
+rerank:
+  enabled: true
+  provider: "${RERANK_PROVIDER:deepinfra}"
+  api_key: "${RERANK_API_KEY}"
+  base_url: "${RERANK_BASE_URL:https://api.deepinfra.com/v1}"
+  model: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
+  timeout: 30
+  batch_size: 10
+  max_concurrent: 5
+
+add:
+  num_workers: 2
+  enable_semantic_extraction: true
+  enable_clustering: true
+  enable_profile_extraction: true
+
+search:
+  mode: "hybrid"
+  use_hybrid_search: true
+  use_reranker: true
+  num_workers: 2
+  hybrid_emb_candidates: 50
+  hybrid_bm25_candidates: 50
+  hybrid_rrf_k: 40
+
+answer:
+  temperature: 0
+  response_top_k: 25
+
+stats:
+  enabled: true
+  output_filename: token_stats.json
+
+# MindMemOS system directory (for Docker and API server)
+system_dir: "systems/MindMemOS"
+service_url: "${MINDMEMOS_SERVICE_URL:http://127.0.0.1:8000}"
+config_name: "${MINDMEMOS_CONFIG_NAME:dev}"

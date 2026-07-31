@@ -1,0 +1,1173 @@
+"""
+Evaluation pipeline runner - date-ordered mode only.
+"""
+import asyncio
+import os
+import re
+import time
+import warnings
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed as thread_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+# Suppress asyncio slow task warnings (noise, not errors)
+os.environ["PYTHONASYNCIODEBUG"] = "0"
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+from tqdm import tqdm
+
+from src.adapters.base import BaseAdapter, ChunkedMessage
+from src.evaluators.base import BaseEvaluator
+from src.models import Dataset, SearchResult, AnswerResult
+from src.models.message import Conversation, Message
+from src.pipeline.checkpoint import CheckpointManager
+from src.trackers import PerOpTracker
+
+
+class Pipeline:
+    """
+    Evaluation Pipeline - date-ordered mode only.
+
+    Flow: For each date in sorted order:
+        ADD: Ingest sessions from this date
+        SEARCH: Retrieve memories for QAs from this date
+        ANSWER: Generate answers for this date's QAs
+    EVALUATE: Evaluate all answers
+    """
+
+    def __init__(
+        self,
+        adapter: BaseAdapter,
+        evaluator: BaseEvaluator,
+        output_dir: Path,
+        run_name: str = "default",
+        use_checkpoint: bool = True,
+        filter_categories: Optional[List[str]] = None,
+        stats_collector=None,
+        debug: bool = False,
+        per_op_tracker: Optional[PerOpTracker] = None,
+    ):
+        self.adapter = adapter
+        self.evaluator = evaluator
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.run_name = run_name
+        self.use_checkpoint = use_checkpoint
+        self.filter_categories = filter_categories or []
+        self._stats_collector = stats_collector
+        self.debug = debug
+        self.per_op_tracker = per_op_tracker
+
+        self.checkpoint = (
+            CheckpointManager(output_dir=self.output_dir, run_name=run_name)
+            if use_checkpoint
+            else None
+        )
+        self._results: Dict[str, Any] = {}
+
+        # Debug logging
+        self._debug_dir = self.output_dir / "debug" if debug else None
+        if self._debug_dir:
+            self._debug_dir.mkdir(parents=True, exist_ok=True)
+
+    async def run(
+        self,
+        dataset: Dataset,
+        stages: Optional[List[str]] = None,
+        smoke_test: bool = False,
+        smoke_messages: int = 10,
+        smoke_questions: int = 3,
+        from_conv: int = 0,
+        to_conv: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        start_time = time.time()
+        self._print_header(dataset)
+
+        # Load existing results from disk for resume
+        self._load_existing_results()
+
+        if from_conv > 0 or to_conv is not None:
+            dataset = self._apply_conversation_range(dataset, from_conv, to_conv)
+
+        if smoke_test:
+            dataset = self._apply_smoke_test(dataset, smoke_messages, smoke_questions)
+
+        dataset = self._apply_category_filter(dataset)
+
+        if len(dataset.samples) == 0:
+            print("[red] No conversations to process![/red]")
+            return {"error": "No conversations selected"}
+
+        dataset, date_info = self._extract_date_info(dataset)
+
+        if stages is None:
+            stages = ["add", "search", "answer", "evaluate"]
+
+        await self._run_date_ordered(dataset, date_info, stages)
+
+        elapsed = time.time() - start_time
+        self._generate_report(elapsed)
+
+        return self._results
+
+    async def _run_date_ordered(
+        self,
+        dataset: Dataset,
+        date_info: Dict[str, Any],
+        stages: List[str],
+    ) -> None:
+        import time as time_module
+
+        # Track stage timings
+        stage_timings: Dict[str, Dict[str, float]] = {}
+
+        sorted_dates = date_info["sorted_dates"]
+        sessions_by_date = date_info["sessions_by_date"]
+        qas_by_date = date_info["qas_by_date"]
+        ordering_info = date_info["ordering_info"]
+
+        print(f"\n🚀 Date-ordered workflow: {len(sorted_dates)} days to process")
+        print(f"   Dates: {[d.strftime('%Y-%m-%d') for d in sorted_dates[:5]]}"
+              f"{'...' if len(sorted_dates) > 5 else ''}")
+
+        all_qa_pairs: List[Any] = []
+        # Note: search_results are now incrementally appended to disk via _append_search_results
+        # For answer stage, load from disk
+        all_search_results: List[SearchResult] = self._results.get("search_results", [])
+
+        # Group sessions and QAs by sample (conversation_id)
+        sample_ids = list({s.conversation_id for s in dataset.samples})
+        print(f"\n👥 {len(sample_ids)} samples to process")
+
+        # Collect all sample data
+        sample_data: Dict[str, Dict[str, Any]] = {}
+        for sample_id in sample_ids:
+            sample_sessions = []  # list of (date_str, session_id)
+            sample_qas = []
+
+            for date in sorted_dates:
+                date_str = date.strftime("%Y-%m-%d")
+                session_ids = sessions_by_date.get(date_str, [])
+                qa_pairs = qas_by_date.get(date_str, [])
+
+                for sid in session_ids:
+                    if ":" in sid:
+                        conv_id, _ = sid.split(":", 1)
+                        if conv_id == sample_id:
+                            sample_sessions.append((date_str, sid))
+
+                for qa in qa_pairs:
+                    if qa.metadata.get("conversation_id") == sample_id:
+                        sample_qas.append(qa)
+
+            sample_data[sample_id] = {
+                "sessions": sample_sessions,
+                "qas": sample_qas,
+            }
+
+        # Parallel processing of samples
+        concurrency = self.adapter.config.get("add", {}).get("num_workers", 10)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        # Check checkpoint for ADD+SEARCH phase
+        if self.checkpoint and self.checkpoint.has_any_progress():
+            progress = self.checkpoint.get_progress_summary()
+            print(f"\n🔄 [ADD+SEARCH] Resuming from checkpoint (last updated: {progress['last_updated']})")
+
+        async def process_sample(sample_id: str) -> Dict[str, Any]:
+            """Process all stages for a single sample."""
+            async with semaphore:
+                result = {
+                    "sample_id": sample_id,
+                    "add_latency": [],
+                    "search_latency": [],
+                    "search_results": [],
+                    "qas": sample_data[sample_id]["qas"],
+                }
+
+                sample_sessions = sample_data[sample_id]["sessions"]
+                sample_qas = sample_data[sample_id]["qas"]
+
+                if not sample_sessions:
+                    return result
+
+                # Collect all dates (from sessions AND from QA ask_times)
+                session_dates = set(date_str for date_str, _ in sample_sessions)
+                qa_dates = set(qa.metadata.get("ask_time", "")[:10] for qa in sample_qas if qa.metadata.get("ask_time"))
+                all_dates = sorted(session_dates | qa_dates)
+
+                # Check completion status
+                sample_add_done = self.checkpoint and self.checkpoint.is_sample_add_complete(sample_id)
+                sample_search_done = self.checkpoint and self.checkpoint.is_sample_search_complete(sample_id)
+
+                # Phase 1: ADD + SEARCH combined per date (ordered)
+                if "add" in stages or "search" in stages:
+                    pbar = tqdm(all_dates, desc=f"👤 {sample_id[:6]} | {len(sample_qas)} QAs", leave=True)
+                    for date_str in pbar:
+                        session_ids = [sid for d, sid in sample_sessions if d == date_str]
+                        date_qas = [qa for qa in sample_qas if qa.metadata.get("ask_time", "").startswith(date_str)]
+
+                        has_session = bool(session_ids)
+                        has_qa = bool(date_qas)
+
+                        # Check date-level completion
+                        date_add_done = self.checkpoint and self.checkpoint.is_date_add_complete(sample_id, date_str)
+                        date_search_done = self.checkpoint and self.checkpoint.is_date_search_complete(sample_id, date_str)
+
+                        # Skip if both ADD and SEARCH for this date are done
+                        if has_session and "add" in stages and date_add_done:
+                            has_session = False
+                        if has_qa and "search" in stages and date_search_done:
+                            has_qa = False
+
+                        if not has_session and not has_qa:
+                            continue
+
+                        ops = f"{date_str} | {'➕ ADD' if has_session else ''}{'🔍 SEARCH' if has_qa else ''}"
+                        pbar.set_description(f"👤 {sample_id[:6]} | {ops}")
+
+                        # ADD: if date has session and add stage requested and not done for this date
+                        if has_session and "add" in stages and not date_add_done:
+                            chunks = self._get_chunks_for_date(dataset, date_str, session_ids, ordering_info)
+
+                            debug_file = None
+                            if self._debug_dir:
+                                debug_path = self._debug_dir / f"add_{sample_id}_{date_str}.txt"
+                                debug_file = open(debug_path, "w", encoding="utf-8")
+                                debug_file.write(f"{'=' * 80}\n")
+                                debug_file.write(f"SAMPLE: {sample_id} | DATE: {date_str}\n")
+                                debug_file.write(f"Sessions: {len(session_ids)}, Chunks: {len(chunks)}\n")
+                                debug_file.write(f"{'=' * 80}\n\n")
+
+                            try:
+                                for session_id, session_chunks in self._group_chunks_by_session(chunks).items():
+                                    if debug_file:
+                                        debug_file.write(f"\n{'---' * 27}\n")
+                                        debug_file.write(f"SESSION: {session_id}\n")
+                                        debug_file.write(f"Chunks: {len(session_chunks)}\n")
+                                        for chunk in session_chunks:
+                                            debug_file.write(f"--- Chunk ({len(chunk.messages)} messages) ---\n")
+                                            for msg in chunk.messages:
+                                                debug_file.write(f"  {msg.speaker_name}: {msg.content}\n")
+                                            debug_file.write("\n")
+
+                                    # Pass all session chunks at once so the adapter can merge
+                                    # them into a single memory-system call for efficient batch processing.
+                                    # `expect_search=has_qa` lets memory-system adapters (e.g. cognee)
+                                    # skip the expensive cognify/graph-extraction step for session-only
+                                    # dates whose data won't ever be queried, saving LLM cost.
+                                    # Per-op tracking
+                                    if self.per_op_tracker:
+                                        with self.per_op_tracker.track("add") as ctx:
+                                            r = await self.adapter.add_chunks(
+                                                session_chunks, expect_search=has_qa,
+                                            )
+                                        record = ctx.record(result_data={
+                                            "date": date_str,
+                                            "session_id": session_id,
+                                            "num_chunks": len(session_chunks),
+                                            "num_messages": sum(len(c.messages) for c in session_chunks),
+                                            "added": r.get("added", 0),
+                                            "failed": r.get("failed", 0),
+                                            "expect_search": has_qa,
+                                        })
+                                        # Use tracker's elapsed (includes adapter call time)
+                                        latency = record.elapsed_seconds
+                                    else:
+                                        start = time.perf_counter()
+                                        r = await self.adapter.add_chunks(
+                                            session_chunks, expect_search=has_qa,
+                                        )
+                                        latency = time.perf_counter() - start
+
+                                    total_messages = sum(len(c.messages) for c in session_chunks)
+                                    entry = {
+                                        "date": date_str,
+                                        "session_id": session_id,
+                                        "num_chunks": len(session_chunks),
+                                        "num_messages": total_messages,
+                                        "latency_seconds": round(latency, 3),
+                                        "added": r.get("added", 0),
+                                        "failed": r.get("failed", 0),
+                                    }
+                                    result["add_latency"].append(entry)
+                            finally:
+                                if debug_file:
+                                    debug_file.write(f"\n{'=' * 80}\n")
+                                    debug_file.write(f"SUMMARY: {len(chunks)} chunks, {len(date_qas)} searches\n")
+                                    debug_file.write(f"{'=' * 80}\n\n")
+                                    debug_file.close()
+
+                        # SEARCH: if date has QA and search stage requested and not done for this date
+                        if has_qa and "search" in stages and not date_search_done:
+                            for qa in date_qas:
+                                start = time.perf_counter()
+                                sr = await self.adapter.search(
+                                    qa.question,
+                                    sample_id,
+                                    self._results.get("index"),
+                                    question_id=qa.question_id,
+                                    ask_time=qa.metadata.get("ask_time", ""),
+                                )
+                                latency = time.perf_counter() - start
+                                result["search_latency"].append({
+                                    "question_id": qa.question_id,
+                                    "conversation_id": sample_id,
+                                    "latency_seconds": round(latency, 3),
+                                })
+                                result["search_results"].append(sr)
+
+                        # Incremental append after each date (deduplicate by question_id)
+                        if result["search_results"]:
+                            self._append_search_results(result["search_results"])
+                        if result["add_latency"]:
+                            self._results.setdefault("add_latency", []).extend(result["add_latency"])
+                            self._save_json(self._results["add_latency"], "add_latency.json")
+                        if result["search_latency"]:
+                            self._results.setdefault("search_latency", []).extend(result["search_latency"])
+                            self._save_json(self._results["search_latency"], "search_latency.json")
+
+                        # Mark date-level completion (after save to avoid losing data on crash)
+                        if has_session and "add" in stages and not date_add_done:
+                            if self.checkpoint:
+                                self.checkpoint.mark_date_add_complete(sample_id, date_str)
+                        if has_qa and "search" in stages and not date_search_done:
+                            if self.checkpoint:
+                                self.checkpoint.mark_date_search_complete(sample_id, date_str)
+                            self._save_json(self._results["search_latency"], "search_latency.json")
+
+                    # Mark sample-level completion after all dates processed
+                    if "add" in stages and not sample_add_done:
+                        if self.checkpoint:
+                            self.checkpoint.mark_sample_add_complete(sample_id)
+                    if "search" in stages and not sample_search_done:
+                        if self.checkpoint:
+                            self.checkpoint.mark_sample_search_complete(sample_id)
+
+                return result
+
+        # Process samples (parallel or serial based on config)
+        add_search_stage_start = time_module.time()
+        sample_parallel = self.adapter.config.get("sample_parallel", True)
+        if sample_data:
+            if sample_parallel:
+                # Process and save incrementally as each sample completes
+                pending = [process_sample(sid) for sid in sample_ids]
+                for fut in asyncio.as_completed(pending):
+                    r = await fut
+                    all_qa_pairs.extend(r["qas"])
+                    new_srs = [sr for sr in r["search_results"] if sr.question_id not in {s.question_id for s in all_search_results}]
+                    all_search_results.extend(new_srs)
+                    # Note: save is already done incrementally inside process_sample after each date
+            else:
+                # Serial processing
+                for sid in sample_ids:
+                    r = await process_sample(sid)
+                    all_qa_pairs.extend(r["qas"])
+                    new_srs = [sr for sr in r["search_results"] if sr.question_id not in {s.question_id for s in all_search_results}]
+                    all_search_results.extend(new_srs)
+                    # Note: save is already done incrementally inside process_sample after each date
+
+        add_search_stage_elapsed = time_module.time() - add_search_stage_start
+        stage_timings["add_search"] = {"elapsed": add_search_stage_elapsed}
+
+        # Load individual result files from results/ directory BEFORE answer stage
+        # This ensures buffered search results (saved by adapter's _save_search_result) are available
+        import json
+        from src.models.search import SearchResult, RetrievedMemory
+        results_dir = self.output_dir / "results"
+
+        def dict_to_search_result_local(d: dict) -> SearchResult:
+            results = [
+                RetrievedMemory(content=r["content"], score=r["score"], metadata=r.get("metadata", {}))
+                if isinstance(r, dict) else r
+                for r in d.get("results", [])
+            ]
+            return SearchResult(
+                question_id=d["question_id"],
+                query=d["query"],
+                conversation_id=d["conversation_id"],
+                results=results,
+                retrieval_metadata=d.get("retrieval_metadata", {}),
+            )
+
+        if results_dir.exists():
+            loaded_count = 0
+            for result_file in results_dir.glob("*.json"):
+                try:
+                    with open(result_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and data.get("question_id"):
+                        sr = dict_to_search_result_local(data)
+                        existing_idx = next((i for i, s in enumerate(all_search_results) if s.question_id == sr.question_id), None)
+                        if existing_idx is not None:
+                            all_search_results[existing_idx] = sr
+                        else:
+                            all_search_results.append(sr)
+                        loaded_count += 1
+                except Exception as e:
+                    print(f"  ⚠️ Failed to load {result_file}: {e}")
+            if loaded_count > 0:
+                print(f"  📂 Loaded {loaded_count} search results from {results_dir}/")
+
+        # Fallback: load from main search_results.json (for re-running answer+evaluate)
+        if not all_search_results:
+            search_results_file = self.output_dir / "search_results.json"
+            if search_results_file.exists():
+                try:
+                    with open(search_results_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        for item in data:
+                            sr = dict_to_search_result_local(item)
+                            all_search_results.append(sr)
+                        print(f"  📂 Loaded {len(data)} search results from search_results.json")
+                except Exception as e:
+                    print(f"  ⚠️ Failed to load search_results.json: {e}")
+
+        # Phase 3: ANSWER
+        answer_stage_start = time_module.time()
+        if "answer" in stages:
+            print(f"\n{'=' * 60}")
+            print(f"💬 [ANSWER] {len(all_qa_pairs)} QAs total")
+
+            answered_ids = self.checkpoint.get_answered_qa_ids() if self.checkpoint else set()
+            remaining_qas = [qa for qa in all_qa_pairs if qa.question_id not in answered_ids]
+            print(f"   Already answered: {len(answered_ids)}, Remaining: {len(remaining_qas)}")
+
+            if remaining_qas:
+                sr_map = {sr.question_id: sr for sr in all_search_results}
+                aligned_srs = [sr_map.get(qa.question_id) for qa in remaining_qas]
+                valid_pairs = [(qa, sr) for qa, sr in zip(remaining_qas, aligned_srs) if sr is not None]
+
+                if valid_pairs:
+                    valid_qas, valid_srs = zip(*valid_pairs)
+                    answer_results = await self._run_answer_for_qas_with_progress(list(valid_qas), list(valid_srs))
+                    answered_ids.update([ar.question_id for ar in answer_results])
+        answer_stage_elapsed = time_module.time() - answer_stage_start
+        stage_timings["answer"] = {"elapsed": answer_stage_elapsed, "count": len(all_qa_pairs)}
+
+        # Phase 4: EVALUATE
+        evaluate_stage_start = time_module.time()
+        if "evaluate" in stages:
+            print(f"\n{'=' * 60}")
+            print("⚖️  [EVALUATE] All answers")
+
+            if self.checkpoint and self.checkpoint.is_evaluate_complete():
+                print("   SKIP (already completed)")
+            else:
+                eval_result = await self.evaluator.evaluate(self._results.get("answer_results", []))
+                self._results["eval_result"] = eval_result
+                self._save_json(self._eval_result_to_dict(eval_result), "eval_results.json")
+
+                if self.checkpoint:
+                    self.checkpoint.mark_evaluate_complete()
+        evaluate_stage_elapsed = time_module.time() - evaluate_stage_start
+        stage_timings["evaluate"] = {"elapsed": evaluate_stage_elapsed, "count": len(self._results.get("answer_results", []))}
+
+        # Store stage timings for report
+        self._results["stage_timings"] = stage_timings
+
+        # Load individual result files from results/ directory (saved by adapter's _save_search_result)
+        import json
+        from src.models.search import SearchResult, RetrievedMemory
+        results_dir = self.output_dir / "results"
+
+        def dict_to_search_result_local(d: dict) -> SearchResult:
+            results = [
+                RetrievedMemory(content=r["content"], score=r["score"], metadata=r.get("metadata", {}))
+                if isinstance(r, dict) else r
+                for r in d.get("results", [])
+            ]
+            return SearchResult(
+                question_id=d["question_id"],
+                query=d["query"],
+                conversation_id=d["conversation_id"],
+                results=results,
+                retrieval_metadata=d.get("retrieval_metadata", {}),
+            )
+
+        if results_dir.exists():
+            for result_file in results_dir.glob("*.json"):
+                try:
+                    with open(result_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and data.get("question_id"):
+                        sr = dict_to_search_result_local(data)
+                        # Replace existing or add new
+                        existing_idx = next((i for i, s in enumerate(all_search_results) if s.question_id == sr.question_id), None)
+                        if existing_idx is not None:
+                            all_search_results[existing_idx] = sr
+                        else:
+                            all_search_results.append(sr)
+                except Exception as e:
+                    print(f"  ⚠️ Failed to load {result_file}: {e}")
+
+        # Save all results
+        self._save_json(
+            [self._search_result_to_dict(sr) for sr in all_search_results],
+            "search_results.json",
+        )
+
+        if self._results.get("add_latency"):
+            self._save_json(self._results["add_latency"], "add_latency.json")
+
+        if self._results.get("search_latency"):
+            self._save_json(self._results["search_latency"], "search_latency.json")
+
+        self._results["ordering_info"] = ordering_info
+
+    def _get_chunks_for_date(
+        self,
+        dataset: Dataset,
+        date_str: str,
+        session_ids: List[str],
+        ordering_info: Dict[str, Any],
+    ) -> List[ChunkedMessage]:
+        """Return one ChunkedMessage per session (all messages in that session)."""
+        chunks = []
+
+        # Build sessions_by_conv mapping: conv_id -> list of session_ids
+        sessions_by_conv: Dict[str, List[str]] = defaultdict(list)
+        for sid in session_ids:
+            if ":" in sid:
+                conv_id, session_key = sid.split(":", 1)
+                sessions_by_conv[conv_id].append(session_key)
+
+        # Build samples lookup
+        samples_by_id = {s.conversation_id: s for s in dataset.samples}
+
+        for conv_id, session_keys in sessions_by_conv.items():
+            if conv_id not in samples_by_id:
+                continue
+
+            sample = samples_by_id[conv_id]
+
+            # Build session lookup: session_id -> Session
+            sessions_map = {s.session_id: s for s in sample.sessions}
+
+            for session_key in session_keys:
+                if session_key not in sessions_map:
+                    continue
+
+                session = sessions_map[session_key]
+                session_msgs = session.messages
+                if not isinstance(session_msgs, list):
+                    continue
+
+                messages = []
+                # Compute session-level timestamp from session_time_original (full datetime)
+                session_dt = None
+                session_time_original = getattr(session, 'session_time_original', '')
+                if session_time_original:
+                    session_dt = self._parse_session_time(session_time_original)
+                # Fallback to date-only parsing
+                session_date = datetime.strptime(date_str, "%Y-%m-%d")
+                for msg_data in session_msgs:
+                    # msg_data is now a Message object with .speaker, .content, .dia_id
+                    dia_id = getattr(msg_data, 'dia_id', '') or ''
+                    msg_timestamp = None
+                    if dia_id:
+                        date_part = dia_id.split("_")[0] if "_" in dia_id else ""
+                        if date_part and len(date_part) == 10:
+                            # Use session_dt (full datetime) if available, otherwise fallback to date + 23:59:59
+                            if session_dt:
+                                msg_timestamp = session_dt
+                            else:
+                                msg_timestamp = datetime.strptime(f"{date_part} 23:59:59", "%Y-%m-%d %H:%M:%S")
+                    # Fallback to session-level datetime when dia_id has no date
+                    if msg_timestamp is None:
+                        msg_timestamp = session_dt or session_date
+                    msg = Message(
+                        speaker_name=getattr(msg_data, 'speaker_name', '') or '',
+                        content=getattr(msg_data, 'content', '') or '',
+                        timestamp=msg_timestamp,
+                        dia_id=dia_id,
+                        metadata={
+                            "blip_caption": getattr(msg_data, 'blip_caption', '') or '',
+                            "query": getattr(msg_data, 'query', '') or '',
+                        },
+                    )
+                    messages.append(msg)
+
+                if not messages:
+                    continue
+
+                unique_session_id = f"{conv_id}:{session_key}"
+                # Use session_dt (full datetime) if available, otherwise fallback to date-only
+                ts_source = session_dt if session_dt else datetime.strptime(date_str, "%Y-%m-%d")
+                chunks.append(ChunkedMessage(
+                    messages=messages,
+                    conversation_id=conv_id,
+                    session_id=unique_session_id,
+                    timestamp=int(ts_source.timestamp()),
+                    session_time_str=getattr(session, 'session_time_original', ''),
+                ))
+
+        return chunks
+
+    def _parse_session_time(self, time_str: str) -> Optional[datetime]:
+        """Parse LoCoMo session time string like '1:56 pm on 8 May, 2023' to datetime (UTC).
+
+        Falls back to parsing '8 May, 2023' (date only) if full datetime parsing fails.
+        """
+        if not time_str:
+            return None
+
+        # Try full datetime parsing: "1:56 pm on 8 May, 2023"
+        for fmt in ("%I:%M %p on %d %B, %Y", "%I:%M %p on %d %B %Y"):
+            try:
+                dt = datetime.strptime(time_str.strip(), fmt)
+                return dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+        # Fallback: try date-only parsing: "8 May, 2023" or "2025-01-01"
+        for fmt in ("%d %B, %Y", "%d %B %Y", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(time_str.strip(), fmt)
+                # Default to 22:00:00 for date-only, matching _extract_date_info behavior
+                dt = dt.replace(hour=22, minute=0, second=0, tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                continue
+
+        return None
+
+    def _group_chunks_by_session(self, chunks: List[ChunkedMessage]) -> Dict[str, List[ChunkedMessage]]:
+        """Group chunks by session_id."""
+        chunks_by_session = defaultdict(list)
+        for chunk in chunks:
+            chunks_by_session[chunk.session_id].append(chunk)
+        return chunks_by_session
+
+    async def _run_search_for_qas(
+        self,
+        qa_pairs: List[Any],
+        ordering_info: Dict[str, Any],
+    ) -> List[SearchResult]:
+        concurrency = self.adapter.config.get("search", {}).get("num_workers", 5)  # control concurrency
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def search_one(qa):
+            async with semaphore:
+                result = await self.adapter.search(
+                    qa.question,
+                    qa.metadata.get("conversation_id", ""),
+                    self._results.get("index"),
+                    question_id=qa.question_id,
+                )
+                interval = self.adapter.config.get("search", {}).get("search_interval", 0)
+                if interval > 0:
+                    await asyncio.sleep(interval)
+                return result
+
+        tasks = [search_one(qa) for qa in qa_pairs]
+        return await asyncio.gather(*tasks)
+
+    async def _run_answer_for_qas(
+        self,
+        qa_pairs: List[Any],
+        search_results: List[SearchResult],
+    ) -> List[AnswerResult]:
+        from src.formatters import format_context
+
+        concurrency = 10
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def answer_one(qa, sr):
+            async with semaphore:
+                context = format_context(sr)
+                answer = await self.adapter.answer(
+                    query=qa.question,
+                    context=context,
+                    conversation_id=sr.conversation_id,
+                    search_result=sr,
+                )
+                return AnswerResult(
+                    question_id=qa.question_id,
+                    question=qa.question,
+                    answer=answer,
+                    golden_answer=qa.answer,
+                    category=qa.category,
+                    conversation_id=sr.conversation_id,
+                    formatted_context=context,
+                    metadata=qa.metadata,
+                )
+
+        tasks = [answer_one(qa, sr) for qa, sr in zip(qa_pairs, search_results)]
+        return await asyncio.gather(*tasks)
+
+    async def _run_answer_for_qas_with_progress(
+        self,
+        qa_pairs: List[Any],
+        search_results: List[SearchResult],
+    ) -> List[AnswerResult]:
+        """Run answer with progress bar and incremental save."""
+        pbar = tqdm(total=len(qa_pairs), desc="💬 ANSWER", leave=True)
+        concurrency = 10
+        semaphore = asyncio.Semaphore(concurrency)
+
+        all_results: List[AnswerResult] = []
+        existing_results = self._results.get("answer_results", [])
+        answered_count = len(existing_results)
+
+        async def answer_one(qa, sr):
+            async with semaphore:
+                from src.formatters import format_context
+                context = format_context(sr)
+                answer = await self.adapter.answer(
+                    query=qa.question,
+                    context=context,
+                    conversation_id=sr.conversation_id,
+                    search_result=sr,
+                )
+                pbar.update(1)
+                return AnswerResult(
+                    question_id=qa.question_id,
+                    question=qa.question,
+                    answer=answer,
+                    golden_answer=qa.answer,
+                    category=qa.category,
+                    conversation_id=sr.conversation_id,
+                    formatted_context=context,
+                    metadata=qa.metadata,
+                )
+
+        # Process with incremental save
+        tasks = [answer_one(qa, sr) for qa, sr in zip(qa_pairs, search_results)]
+        pending = {asyncio.create_task(t): i for i, t in enumerate(tasks)}
+
+        for fut in asyncio.as_completed(pending):
+            result = await fut
+            all_results.append(result)
+            # Incremental save after each answer
+            self._results.setdefault("answer_results", []).append(result)
+            self._save_json(
+                [self._answer_result_to_dict(ar) for ar in self._results["answer_results"]],
+                "answer_results.json",
+            )
+            # Update checkpoint
+            if self.checkpoint:
+                self.checkpoint.mark_answer_complete([result.question_id])
+
+        pbar.close()
+        return all_results
+
+    def _extract_date_info(self, dataset: Dataset) -> tuple:
+        DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+        def parse_date(date_str: str) -> datetime:
+            """Parse date string to datetime with second precision.
+
+            Supports:
+            - ISO format: "2023-05-08" → 2023-05-08 22:00:00
+            - LoCoMo natural language: "1:56 pm on 8 May, 2023" → 2023-05-08 13:56:00
+            - LoCoMo natural language: "1:56 pm on 8 May 2023" → 2023-05-08 13:56:00
+
+            If no time is provided, defaults to 22:00:00.
+            """
+            if not isinstance(date_str, str) or not date_str.strip():
+                return datetime.max
+
+            date_str = date_str.strip()
+
+            # Try ISO format: 2023-05-08
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                return dt.replace(hour=22, minute=0, second=0)
+            except ValueError:
+                pass
+
+            # Try LoCoMo natural language: "1:56 pm on 8 May, 2023"
+            try:
+                return datetime.strptime(date_str, "%I:%M %p on %d %B, %Y")
+            except ValueError:
+                pass
+
+            # Try LoCoMo natural language: "1:56 pm on 8 May 2023"
+            try:
+                return datetime.strptime(date_str, "%I:%M %p on %d %B %Y")
+            except ValueError:
+                pass
+
+            return datetime.max
+
+        def extract_qa_date(qa) -> datetime:
+            match = DATE_PATTERN.search(qa.question)
+            if match:
+                return parse_date(match.group(1))
+            ask_time = qa.metadata.get("ask_time", "")
+            if ask_time:
+                return parse_date(ask_time)
+            return datetime.max
+
+        all_dates: Set[datetime] = set()
+        sessions_by_date: Dict[str, List[str]] = defaultdict(list)
+        qas_by_date: Dict[str, List[Any]] = defaultdict(list)
+        ordering_info: Dict[str, Dict[str, Any]] = {}
+
+        # Build samples dict for easy lookup
+        samples_by_id = {s.conversation_id: s for s in dataset.samples}
+
+        for sample in dataset.samples:
+            conv_id = sample.conversation_id
+
+            session_dates = {}
+            for session in sample.sessions:
+                session_key = session.session_id
+                unique_session_id = f"{conv_id}:{session_key}"
+                parsed = parse_date(session.session_time) if session.session_time else datetime.max
+                session_dates[unique_session_id] = parsed
+                if parsed != datetime.max:
+                    date_key = parsed.strftime("%Y-%m-%d")  # Use parsed date as key for consistency
+                    sessions_by_date[date_key].append(unique_session_id)
+                    all_dates.add(parsed)
+
+            sorted_session_ids = sorted(session_dates.keys(), key=lambda s: session_dates[s])
+
+            # QA pairs are now in sample.qa_pairs
+            conv_qas = sample.qa_pairs
+            for qa in conv_qas:
+                qa_date = extract_qa_date(qa)
+                date_str = qa_date.strftime("%Y-%m-%d")
+                if qa_date != datetime.max:
+                    qas_by_date[date_str].append(qa)
+                    all_dates.add(qa_date)
+
+            ordering_info[conv_id] = {
+                "session_order": sorted_session_ids,
+                "qa_order": [qa.question_id for qa in conv_qas],
+            }
+
+        sorted_dates = sorted(all_dates)
+
+        def get_first_session_date(sample):
+            if not sample.sessions:
+                return datetime.max
+            for session in sorted(sample.sessions, key=lambda s: s.session_id):
+                if session.session_time:
+                    parsed = parse_date(session.session_time)
+                    if parsed != datetime.max:
+                        return parsed
+            return datetime.max
+
+        sorted_samples = sorted(dataset.samples, key=get_first_session_date)
+
+        # Rebuild Dataset with sorted samples
+        updated_samples = []
+        sorted_qa_pairs = []
+        for sample in sorted_samples:
+            sorted_qas = sorted(sample.qa_pairs, key=extract_qa_date)
+            sorted_qa_pairs.extend(sorted_qas)
+            # Keep sessions unsorted here since pipeline processes by date
+            updated_samples.append(sample)
+
+        updated_dataset = Dataset(
+            dataset_name=dataset.dataset_name,
+            samples=updated_samples,
+            qa_pairs=sorted_qa_pairs,
+            metadata={**dataset.metadata, "date_ordered": True},
+        )
+
+        # Keep sessions_by_date in YYYY-MM-DD format string
+        sessions_by_date_str = {k: v for k, v in sessions_by_date.items()}
+        qas_by_date_str = {k.strftime("%Y-%m-%d") if isinstance(k, datetime) else k: v for k, v in qas_by_date.items()}
+
+        date_info = {
+            "sorted_dates": sorted_dates,
+            "sessions_by_date": sessions_by_date_str,
+            "qas_by_date": qas_by_date_str,
+            "ordering_info": ordering_info,
+        }
+
+        return updated_dataset, date_info
+
+    def _apply_conversation_range(self, dataset: Dataset, from_conv: int, to_conv: Optional[int]) -> Dataset:
+        if not dataset.samples:
+            return dataset
+
+        total_convs = len(dataset.samples)
+        end_idx = to_conv if to_conv is not None else total_convs
+
+        if from_conv < 0:
+            from_conv = 0
+        if from_conv >= total_convs:
+            return Dataset(dataset_name=dataset.dataset_name, samples=[], qa_pairs=[], metadata=dataset.metadata)
+
+        selected_samples = dataset.samples[from_conv:end_idx]
+        selected_qa = []
+        for sample in selected_samples:
+            for qa in sample.qa_pairs:
+                qa.conversation_id = sample.conversation_id
+                selected_qa.append(qa)
+
+        return Dataset(
+            dataset_name=dataset.dataset_name,
+            samples=selected_samples,
+            qa_pairs=selected_qa,
+            metadata={**dataset.metadata, "conversation_range": [from_conv, end_idx]},
+        )
+
+    def _apply_smoke_test(self, dataset: Dataset, num_messages: int, num_questions: int) -> Dataset:
+        trimmed_samples = []
+        trimmed_qa = []
+
+        for sample in dataset.samples:
+            trimmed_samples.append(sample)
+            for qa in sample.qa_pairs[:num_questions] if num_questions > 0 else sample.qa_pairs:
+                qa.conversation_id = sample.conversation_id
+                trimmed_qa.append(qa)
+
+        return Dataset(
+            dataset_name=dataset.dataset_name + "_smoke",
+            samples=trimmed_samples,
+            qa_pairs=trimmed_qa,
+            metadata={**dataset.metadata, "smoke_test": True},
+        )
+
+    def _apply_category_filter(self, dataset: Dataset) -> Dataset:
+        if not self.filter_categories:
+            return dataset
+
+        filter_set = {str(c) for c in self.filter_categories}
+
+        # Filter within each sample
+        filtered_samples = []
+        for sample in dataset.samples:
+            filtered_qa = [qa for qa in sample.qa_pairs if qa.category not in filter_set]
+            if filtered_qa:
+                filtered_samples.append(sample)
+
+        # Collect all filtered QA pairs for backward compatibility
+        all_filtered_qa = []
+        for sample in filtered_samples:
+            for qa in sample.qa_pairs:
+                if qa.category not in filter_set:
+                    all_filtered_qa.append(qa)
+
+        # Compute totals for reporting
+        original_total = sum(len(s.qa_pairs) for s in dataset.samples)
+        new_total = len(all_filtered_qa)
+
+        if new_total < original_total:
+            filtered_count = original_total - new_total
+            print(f"Filtered out {filtered_count} questions from categories")
+
+        return Dataset(
+            dataset_name=dataset.dataset_name,
+            samples=filtered_samples,
+            qa_pairs=all_filtered_qa,
+            metadata={**dataset.metadata, "filtered_categories": list(filter_set)},
+        )
+
+    def _print_header(self, dataset: Dataset) -> None:
+        print(f"\n{'=' * 60}")
+        print("📋 Evaluation Pipeline (date-ordered)")
+        print(f"{'=' * 60}")
+        print(f"📂 Dataset: {dataset.dataset_name}")
+        print(f"⚙️  System: {self.adapter.get_system_info()['name']}")
+        print(f"{'=' * 60}\n")
+
+    def _load_existing_results(self) -> None:
+        """Load existing results from output dir for resume."""
+        import json
+        from src.models.search import SearchResult, RetrievedMemory
+        from src.models.answer import AnswerResult
+
+        def dict_to_search_result(d: dict) -> SearchResult:
+            results = [
+                RetrievedMemory(content=r["content"], score=r["score"], metadata=r.get("metadata", {}))
+                if isinstance(r, dict) else r
+                for r in d.get("results", [])
+            ]
+            return SearchResult(
+                question_id=d["question_id"],
+                query=d["query"],
+                conversation_id=d["conversation_id"],
+                results=results,
+                retrieval_metadata=d.get("retrieval_metadata", {}),
+            )
+
+        def dict_to_answer_result(d: dict) -> AnswerResult:
+            return AnswerResult(
+                question_id=d["question_id"],
+                question=d["question"],
+                answer=d["answer"],
+                golden_answer=d["golden_answer"],
+                category=d.get("category"),
+                conversation_id=d.get("conversation_id", ""),
+                formatted_context=d.get("formatted_context", ""),
+                metadata=d.get("metadata", {}),
+            )
+
+        # Load answer_results.json if exists
+        answer_path = self.output_dir / "answer_results.json"
+        if answer_path.exists():
+            try:
+                with open(answer_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    ar_objects = [dict_to_answer_result(d) for d in data]
+                    self._results["answer_results"] = ar_objects
+                    print(f"  📂 Loaded {len(ar_objects)} existing answer results from {answer_path}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to load answer_results.json: {e}")
+
+        # Load search_results.json if exists
+        search_path = self.output_dir / "search_results.json"
+        if search_path.exists():
+            try:
+                with open(search_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    sr_objects = [dict_to_search_result(d) for d in data]
+                    self._results["search_results"] = sr_objects
+                    print(f"  📂 Loaded {len(sr_objects)} existing search results from {search_path}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to load search_results.json: {e}")
+
+        # Load add_latency.json if exists
+        add_latency_path = self.output_dir / "add_latency.json"
+        if add_latency_path.exists():
+            try:
+                with open(add_latency_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._results["add_latency"] = data
+                    print(f"  📂 Loaded {len(data)} existing add_latency entries from {add_latency_path}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to load add_latency.json: {e}")
+
+        # Load search_latency.json if exists
+        search_latency_path = self.output_dir / "search_latency.json"
+        if search_latency_path.exists():
+            try:
+                with open(search_latency_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._results["search_latency"] = data
+                    print(f"  📂 Loaded {len(data)} existing search_latency entries from {search_latency_path}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to load search_latency.json: {e}")
+
+    def _save_json(self, data: Any, filename: str) -> None:
+        import json
+        from filelock import FileLock
+        filepath = self.output_dir / filename
+        lock_path = self.output_dir / f"{filename}.lock"
+        lock = FileLock(str(lock_path), timeout=60)
+        with lock:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+    def _append_search_results(self, new_results: List["SearchResult"]) -> None:
+        """Incrementally append new search results to file (deduplicate by question_id)."""
+        import json
+        from filelock import FileLock
+
+        filepath = self.output_dir / "search_results.json"
+        lock_path = self.output_dir / "search_results.json.lock"
+
+        # Load existing data
+        existing_ids = set()
+        existing_data = []
+        if filepath.exists():
+            lock = FileLock(str(lock_path), timeout=60)
+            with lock:
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                    if isinstance(existing_data, list):
+                        existing_ids = {item["question_id"] for item in existing_data}
+                except (json.JSONDecodeError, Exception):
+                    existing_data = []
+
+        # Deduplicate and append
+        new_data = [self._search_result_to_dict(sr) for sr in new_results]
+        for item in new_data:
+            if item["question_id"] not in existing_ids:
+                existing_data.append(item)
+                existing_ids.add(item["question_id"])
+
+        # Save
+        lock = FileLock(str(lock_path), timeout=60)
+        with lock:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, indent=2, ensure_ascii=False, default=str)
+
+    def _generate_report(self, elapsed: float) -> None:
+        if "eval_result" not in self._results:
+            return
+
+        eval_result = self._results["eval_result"]
+        stage_timings = self._results.get("stage_timings", {})
+
+        lines = [
+            "=" * 60,
+            "📊 Evaluation Report",
+            "=" * 60,
+            f"System: {self.adapter.get_system_info()['name']}",
+            f"Total Time: {elapsed:.2f}s",
+            "",
+        ]
+
+        # Stage timings
+        if stage_timings:
+            lines.append("📈 Stage Timings:")
+            for stage, info in stage_timings.items():
+                stage_name = stage.replace("_", " ").title()
+                elapsed = info.get("elapsed", 0)
+                count = info.get("count", "")
+                count_str = f" ({count} items)" if count else ""
+                lines.append(f"  {stage_name}: {elapsed:.2f}s{count_str}")
+            lines.append("")
+
+        # Evaluation results
+        lines.extend([
+            f"Total Questions: {eval_result.total_questions}",
+            f"Correct: {eval_result.correct}",
+            f"Accuracy: {eval_result.accuracy:.2%}",
+        ])
+
+        if eval_result.weighted_score is not None:
+            lines.append(f"Weighted Score: {eval_result.weighted_score:.2%}")
+
+        report = "\n".join(lines)
+        report_path = self.output_dir / "report.txt"
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report)
+
+        print(f"\n{report}")
+
+    def _search_result_to_dict(self, sr: SearchResult) -> dict:
+        return {
+            "question_id": sr.question_id,
+            "query": sr.query,
+            "conversation_id": sr.conversation_id,
+            "results": [{"content": r.content, "score": r.score, "metadata": r.metadata} for r in sr.results],
+            "retrieval_metadata": sr.retrieval_metadata,
+        }
+
+    def _answer_result_to_dict(self, ar: AnswerResult) -> dict:
+        return {
+            "question_id": ar.question_id,
+            "question": ar.question,
+            "answer": ar.answer,
+            "golden_answer": ar.golden_answer,
+            "category": ar.category,
+            "conversation_id": ar.conversation_id,
+            "formatted_context": ar.formatted_context,
+            "metadata": ar.metadata,
+        }
+
+    def _eval_result_to_dict(self, er) -> dict:
+        return {
+            "total_questions": er.total_questions,
+            "correct": er.correct,
+            "accuracy": er.accuracy,
+            "detailed_results": er.detailed_results,
+            "metadata": er.metadata,
+        }

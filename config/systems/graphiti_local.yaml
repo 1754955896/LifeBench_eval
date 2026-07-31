@@ -1,0 +1,42 @@
+# Graphiti Local System Configuration
+# Uses direct Neo4j connection + Graphiti core (no HTTP API queue worker)
+
+name: "graphiti_local"
+version: "1.0"
+description: "Graphiti Local - Direct Neo4j connection without HTTP API"
+
+adapter: "graphiti_local"
+
+builder: "graphiti_local"
+
+# Builder configuration (relative to systems/graphiti/)
+docker_compose: "systems/graphiti/local/docker-compose.local.yml"
+docker_wait: 120
+
+# Neo4j connection (used by adapter) - use existing container
+neo4j_uri: "bolt://localhost:7687"
+neo4j_user: "neo4j"
+neo4j_password: "password"
+
+# Graphiti API host (existing container)
+host: "http://localhost:8000"
+
+# LLM settings for fact extraction and answer generation
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-v4-flash}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com/v1}"
+  temperature: 0
+  max_tokens: 32768
+
+# Embedder settings
+embedder:
+  api_key: "${EMBEDDING_API_KEY:-${LLM_API_KEY}}"
+  base_url: "${EMBEDDING_BASE_URL:-${LLM_BASE_URL}}"
+  model: "${EMBEDDING_MODEL:}"
+  dimension: "1024"
+
+# Search settings
+search:
+  top_k: 40

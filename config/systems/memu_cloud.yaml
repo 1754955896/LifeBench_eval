@@ -1,0 +1,28 @@
+# memU Cloud System Configuration
+name: "memu_cloud"
+version: "1.0"
+description: "memU Cloud API (memu.so)"
+
+adapter: "memu_cloud"
+
+# memU 云服务地址
+api_url: "https://api.memu.so"
+api_key: "${MEMU_API_KEY}"  
+max_retries: 3
+retry_delay: 2.0
+timeout: 60.0
+
+# Answer 阶段所需的 LLM（用于根据检索到的记忆生成最终答案，与 memU 存储无关）
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:-https://openrouter.ai/api/v1}"
+  temperature: 0
+  max_tokens: 32768
+  
+search:
+  top_k: 40
+
+answer:
+  max_retries: 3

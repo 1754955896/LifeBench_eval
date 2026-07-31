@@ -1,0 +1,79 @@
+# Mem0 System Configuration
+
+name: "mem0"
+version: "1.0"
+description: "Mem0"
+
+adapter: "mem0"
+
+builder: "mem0"
+
+# Builder configuration (used by builder to start memory system)
+docker_compose: "systems/mem0/server/docker-compose.yaml"
+env_template: "systems/mem0/server/.env.example"
+env_defaults:
+  AUTH_DISABLED: "true"
+
+  # DeepSeek LLM
+  DEEPSEEK_API_KEY: "${LLM_API_KEY}"
+  DEEPSEEK_API_BASE: "${LLM_BASE_URL:https://api.deepseek.com}"
+
+  # DashScope Embedding
+  DASHSCOPE_API_KEY: "${VECTORIZE_API_KEY}"
+  DASHSCOPE_EMBEDDING_URL: "${VECTORIZE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}"
+  DASHSCOPE_EMBEDDING_MODEL: ${VECTORIZE_MODEL:custom}"
+
+  # Qdrant Vector Store
+  QDRANT_HOST: "qdrant"
+  QDRANT_PORT: 6333
+  QDRANT_COLLECTION_NAME: "memories"
+  QDRANT_ON_DISK: "true"
+
+  # Postgres (for app data)
+  POSTGRES_USER: "postgres"
+  POSTGRES_PASSWORD: "postgres"
+  POSTGRES_DB: "postgres"
+
+  # Reranker Configuration
+  MEM0_RERANKER_ENABLED: "true"
+  MEM0_RERANKER_PROVIDER: "llm_reranker"
+  MEM0_RERANKER_MODEL: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
+  MEM0_RERANKER_API_KEY: "${RERANKER_API_KEY:}"
+  MEM0_RERANKER_BASE_URL: "${RERANKER_BASE_URL:https://api.siliconflow.cn/v1}"
+  MEM0_RERANKER_TOP_K: "25"
+
+  # Default models
+  MEM0_DEFAULT_LLM_MODEL: "deepseek-chat"
+  MEM0_DEFAULT_EMBEDDER_MODEL: "custom"
+docker_wait: 30
+post_start_script: null
+
+# Multi-threaded batch processing
+thread_count: 2
+thread_batch_size: 1
+
+api_key: "${MEM0_API_KEY}"
+batch_size: 5
+max_retries: 5
+max_content_length: 8000
+add_interval: 0.5
+num_workers: 2
+post_add_wait_seconds: 180
+infer: true
+
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:deepseek-chat}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  temperature: 0
+  max_tokens: 32768
+
+search:
+  top_k: 40
+  search_interval: 0.05
+  rerank: false
+  num_workers: 2
+
+answer:
+  max_retries: 3

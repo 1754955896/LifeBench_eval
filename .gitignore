@@ -1,0 +1,53 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output & results
+output/
+results/
+.cognee/
+
+# Datasets (large, not committed)
+datasets/
+
+# Project subdirectories
+tests/
+
+# Ignore all systems subdirectories except the allowed ones
+systems/*/
+
+# LifeBench systems - explicitly keep these
+
+!systems/EverMemOS_bz/
+
+# System config files (contain API keys)
+config/systems/memos_cloud_blocking.yaml
+config/systems/zep_cloud.yaml
+config/systems/graphrag.yaml
+# OS
+.DS_Store
+Thumbs.db
+
+systems/*/.env
+systems/*/*.log
+systems/*/api*.log

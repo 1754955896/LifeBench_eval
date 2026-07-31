@@ -1,0 +1,62 @@
+# Hindsight System Configuration
+
+name: "hindsight"
+version: "1.0"
+description: "Hindsight Agent Memory System"
+
+adapter: "hindsight"
+
+builder: "hindsight"
+
+# Adapter configuration
+# MemoryEngine direct mode (no Docker/server required for local operation)
+
+bank_id: "default"
+budget: "mid"  # candidates sent to rerank: low=~100, mid=~300, high=~1000
+db_url: "pg0"  # embedded mode, or "postgresql://user:pass@host/db"
+
+# LLM Proxy for token tracking
+llm_proxy_url: "http://localhost:18443"
+
+# Memory LLM (for fact extraction/consolidation in MemoryEngine)
+# Hindsight supports deepseek provider directly
+memory_llm_provider: "deepseek"
+memory_llm_api_key: "${LLM_API_KEY}"
+memory_llm_model: "deepseek-v4-flash"
+memory_llm_base_url: "https://api.deepseek.com"
+
+# Answer LLM (for generating answers from retrieved context)
+# Falls back to memory_llm_* if not specified
+answer_llm_provider: "deepseek"
+answer_llm_api_key: "${LLM_API_KEY}"
+answer_llm_model: "deepseek-v4-flash"
+answer_llm_base_url: "https://api.deepseek.com"
+
+# Legacy LLM config (still used for answer generation if answer_llm_* not set)
+llm:
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
+  api_key: "${LLM_API_KEY}"
+  base_url: "https://api.deepseek.com"
+  temperature: 0
+  max_tokens: 32768
+
+# Embeddings Configuration (SiliconFlow dedicated API)
+HINDSIGHT_API_EMBEDDINGS_PROVIDER: "siliconflow"
+HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_API_KEY: "${VECTORIZE_API_KEY}"
+HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_MODEL: "${VECTORIZE_MODEL}"
+HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_BASE_URL: "https://api.siliconflow.cn/v1"
+HINDSIGHT_API_EMBEDDINGS_SILICONFLOW_DIMENSIONS: 1024
+
+# Reranker Configuration (SiliconFlow native rerank)
+HINDSIGHT_API_RERANKER_PROVIDER: "siliconflow"
+HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY: "${RERANK_API_KEY}"
+HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL: "${RERANK_MODEL}"
+HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL: "https://api.siliconflow.cn/v1"
+
+# Retry configuration
+max_retries: 5
+retry_delay: 2.0
+
+search:
+  top_k: 40
