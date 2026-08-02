@@ -145,6 +145,12 @@ class CogneeBuilder(BaseBuilder):
                 "The 'rerank' config block is ignored."
             )
 
+        sqlite_timeout = self.config.get("sqlite_timeout")
+        if sqlite_timeout is not None:
+            import json as _json
+            self._write_kv(lines, "DATABASE_CONNECT_ARGS",
+                           _json.dumps({"timeout": int(sqlite_timeout)}), written)
+
         self._write_section(lines, "Data Directories")
         self._write_paths(lines, written)
 
@@ -180,13 +186,23 @@ class CogneeBuilder(BaseBuilder):
         if model and "/" not in model and provider != "default":
             model = f"{provider}/{model}"
 
+        # When llm_proxy_url is configured, route LLM traffic through the
+        # proxy so tracker can count tokens via /token-stats. Embedding
+        # traffic is NOT redirected — it goes directly to the embedding
+        # provider (SiliconFlow), not through the proxy.
+        llm_proxy_url = self.config.get("llm_proxy_url", "")
+
         self._write_kv(lines, "LLM_PROVIDER", provider, written)
         if model:
             self._write_kv(lines, "LLM_MODEL", str(model), written)
         if api_key:
             self._write_kv(lines, "LLM_API_KEY", str(api_key), written)
         if base_url:
-            self._write_kv(lines, "LLM_ENDPOINT", str(base_url), written)
+            if llm_proxy_url:
+                self._write_kv(lines, "LLM_ENDPOINT", str(llm_proxy_url), written)
+                logger.info("  LLM traffic routed through proxy: %s", llm_proxy_url)
+            else:
+                self._write_kv(lines, "LLM_ENDPOINT", str(base_url), written)
         if llm.get("temperature") is not None:
             self._write_kv(lines, "LLM_TEMPERATURE", str(llm["temperature"]), written)
         if llm.get("max_tokens") is not None:

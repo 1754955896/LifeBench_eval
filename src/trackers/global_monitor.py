@@ -1,6 +1,7 @@
 """
 Global resource monitor - background thread for periodic sampling.
 """
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -10,19 +11,28 @@ import json
 
 from src.trackers.system_trackers.base import SystemTracker
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class TimelineEntry:
-    """A single point in the resource timeline."""
+    """A single point in the resource timeline.
+
+    entry_type: "sample" (periodic snapshot), "op_start", or "op_end".
+    Non-sample entries carry no resource data — they serve as time anchors
+    so per-operation internal behaviour can be sliced from the timeline.
+    """
     timestamp: float  # Unix timestamp
     elapsed_seconds: float  # Seconds since monitoring started
+    entry_type: str = "sample"
+    operation: str = ""  # "add" / "search", meaningful only for op_start/op_end
     storage_mb: float = 0.0
     memory_rss_mb: float = 0.0
     cpu_percent: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "t": round(self.timestamp, 2),
             "elapsed": round(self.elapsed_seconds, 2),
             "storage_mb": round(self.storage_mb, 3),
@@ -30,6 +40,10 @@ class TimelineEntry:
             "cpu_percent": round(self.cpu_percent, 2),
             "extra": self.extra,
         }
+        if self.entry_type != "sample":
+            d["entry_type"] = self.entry_type
+            d["operation"] = self.operation
+        return d
 
 
 class GlobalMonitor:
@@ -130,9 +144,8 @@ class GlobalMonitor:
                 if timeline_copy is not None:
                     self._write_timeline(timeline_copy)
 
-            except Exception as e:
-                # Don't let sampling errors crash the thread
-                pass
+            except Exception:
+                logger.warning("GlobalMonitor sample failed", exc_info=True)
 
             # Wait for next interval or stop event
             self._stop_event.wait(timeout=self.interval)
@@ -146,10 +159,11 @@ class GlobalMonitor:
         tracker_dir.mkdir(parents=True, exist_ok=True)
         filepath = tracker_dir / "global_resource_timeline.json"
 
-        # Compute summary from the provided entries (not self._timeline)
-        memory_values = [e.memory_rss_mb for e in entries]
-        storage_values = [e.storage_mb for e in entries]
-        cpu_values = [e.cpu_percent for e in entries]
+        # Compute summary from sample entries only (skip op_start/op_end markers)
+        sample_entries = [e for e in entries if e.entry_type == "sample"]
+        memory_values = [e.memory_rss_mb for e in sample_entries]
+        storage_values = [e.storage_mb for e in sample_entries]
+        cpu_values = [e.cpu_percent for e in sample_entries]
 
         summary = {
             "total_samples": len(entries),
@@ -180,14 +194,33 @@ class GlobalMonitor:
             entries = list(self._timeline)
         self._write_timeline(entries)
 
+    def signal(self, operation: str, marker: str) -> None:
+        """Insert an operation marker (op_start / op_end) into the timeline.
+
+        Called by PerOpTracker when an operation begins or ends.
+        The marker carries no resource data — it serves as a time anchor
+        so downstream consumers can slice per-operation intervals from
+        the surrounding periodic samples.
+        """
+        elapsed = time.time() - self._start_time if self._start_time else 0.0
+        entry = TimelineEntry(
+            timestamp=time.time(),
+            elapsed_seconds=elapsed,
+            entry_type=marker,
+            operation=operation,
+        )
+        with self._lock:
+            self._timeline.append(entry)
+
     def _compute_summary(self) -> Dict[str, Any]:
         """Compute summary statistics from timeline."""
         if not self._timeline:
             return {}
 
-        memory_values = [e.memory_rss_mb for e in self._timeline]
-        storage_values = [e.storage_mb for e in self._timeline]
-        cpu_values = [e.cpu_percent for e in self._timeline]
+        sample_entries = [e for e in self._timeline if e.entry_type == "sample"]
+        memory_values = [e.memory_rss_mb for e in sample_entries]
+        storage_values = [e.storage_mb for e in sample_entries]
+        cpu_values = [e.cpu_percent for e in sample_entries]
 
         return {
             "total_samples": len(self._timeline),

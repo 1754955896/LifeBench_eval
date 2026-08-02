@@ -4,9 +4,7 @@ Base classes for system-specific resource trackers and common data structures.
 This module contains:
 - SystemSnapshot: snapshot dataclass for system tracker results
 - SystemTracker: abstract base class for memory system trackers
-- ResourceSnapshot: generic resource snapshot for PerOpTracker
-- OpRecord: record of a single operation's resource usage
-- _system_snapshot_to_resource: converter function
+- OpRecord: record of a single operation (timing + metadata)
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -76,53 +74,51 @@ class SystemTracker(ABC):
         """Get backend-specific statistics."""
         return {}
 
+    @staticmethod
+    def transform_llm_request(data: dict) -> dict:
+        """Transform incoming LLM request before forwarding.
 
-@dataclass
-class ResourceSnapshot:
-    """A snapshot of resource usage at a point in time."""
-    storage_mb: float = 0.0
-    storage_delta_mb: float = 0.0
-    memory_rss_mb: float = 0.0
-    memory_vms_mb: float = 0.0
-    memory_delta_mb: float = 0.0
-    cpu_percent: float = 0.0
-    extra: Dict[str, Any] = field(default_factory=dict)
+        Override this in system-specific trackers to handle quirks like
+        liteLLM expanding ``extra_body`` keys as top-level JSON fields.
+        The proxy calls this before forwarding to the real LLM SDK.
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "storage_mb": round(self.storage_mb, 3),
-            "memory_rss_mb": round(self.memory_rss_mb, 2),
-            "memory_vms_mb": round(self.memory_vms_mb, 2),
-            "cpu_percent": round(self.cpu_percent, 2),
-            "extra": self.extra,
-        }
+        Returns a (possibly modified) shallow copy of *data*.
+        """
+        return dict(data)
 
-    def __sub__(self, other: "ResourceSnapshot") -> "ResourceSnapshot":
-        """Subtract two snapshots to get delta."""
-        return ResourceSnapshot(
-            storage_delta_mb=self.storage_mb - other.storage_mb,
-            memory_delta_mb=self.memory_rss_mb - other.memory_rss_mb,
-            memory_rss_mb=self.memory_rss_mb,
-            memory_vms_mb=self.memory_vms_mb,
-            cpu_percent=max(self.cpu_percent, other.cpu_percent),
-            extra=self.extra,
-        )
+    @staticmethod
+    def wrap_llm_response(response_dict: dict,
+                          tool_info: dict | None) -> dict:
+        """Wrap LLM response after receiving it from the upstream API.
+
+        The companion to ``transform_llm_request``.  Override when the
+        request transform changes the response format (e.g. TOOLS→JSON
+        mode conversion) and the response needs to be converted back.
+
+        *tool_info* is the metadata stashed by ``transform_llm_request``
+        (``data["_proxy_tool_info"]``), or ``None`` if no conversion was
+        applied.
+
+        Returns *response_dict* unchanged by default.
+        """
+        return response_dict
 
 
 @dataclass
 class OpRecord:
-    """Record of a single operation's resource usage."""
+    """Record of a single operation's timing and metadata.
+
+    Resource data (CPU/memory/storage) is captured by GlobalMonitor's
+    timeline; slice it between op_start and op_end markers to get
+    per-operation internal behaviour.
+    """
     backend: str
     operation: str
     elapsed_seconds: float
-    before: ResourceSnapshot
-    after: ResourceSnapshot
-    delta: ResourceSnapshot = field(init=False)
     result_data: Dict[str, Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=0.0)
+    timestamp: float = 0.0
 
     def __post_init__(self):
-        self.delta = self.after - self.before
         if self.timestamp == 0.0:
             import time
             self.timestamp = time.time()
@@ -133,21 +129,5 @@ class OpRecord:
             "operation": self.operation,
             "timestamp": round(self.timestamp, 2),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
-            "storage_mb": round(self.after.storage_mb, 3),
-            "storage_delta_mb": round(self.delta.storage_delta_mb, 3),
-            "memory_rss_mb": round(self.after.memory_rss_mb, 2),
-            "memory_delta_mb": round(self.delta.memory_delta_mb, 2),
-            "cpu_percent": round(self.delta.cpu_percent, 2),
-            "extra": self.delta.extra,
             "result_data": self.result_data,
         }
-
-
-def _system_snapshot_to_resource(snap: SystemSnapshot) -> ResourceSnapshot:
-    """Convert SystemSnapshot to ResourceSnapshot."""
-    return ResourceSnapshot(
-        storage_mb=snap.storage_mb,
-        memory_rss_mb=snap.memory_rss_mb,
-        cpu_percent=snap.cpu_percent,
-        extra=snap.extra,
-    )

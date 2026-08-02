@@ -48,6 +48,7 @@ class Pipeline:
         stats_collector=None,
         debug: bool = False,
         per_op_tracker: Optional[PerOpTracker] = None,
+        serial: bool = False,
     ):
         self.adapter = adapter
         self.evaluator = evaluator
@@ -59,6 +60,7 @@ class Pipeline:
         self._stats_collector = stats_collector
         self.debug = debug
         self.per_op_tracker = per_op_tracker
+        self._serial = serial
 
         self.checkpoint = (
             CheckpointManager(output_dir=self.output_dir, run_name=run_name)
@@ -168,7 +170,7 @@ class Pipeline:
             }
 
         # Parallel processing of samples
-        concurrency = self.adapter.config.get("add", {}).get("num_workers", 10)
+        concurrency = 1 if self._serial else self.adapter.config.get("add", {}).get("num_workers", 10)
         semaphore = asyncio.Semaphore(concurrency)
 
         # Check checkpoint for ADD+SEARCH phase
@@ -303,14 +305,29 @@ class Pipeline:
                         # SEARCH: if date has QA and search stage requested and not done for this date
                         if has_qa and "search" in stages and not date_search_done:
                             for qa in date_qas:
-                                start = time.perf_counter()
-                                sr = await self.adapter.search(
-                                    qa.question,
-                                    sample_id,
-                                    self._results.get("index"),
-                                    question_id=qa.question_id,
-                                )
-                                latency = time.perf_counter() - start
+                                if self.per_op_tracker:
+                                    with self.per_op_tracker.track("search") as ctx:
+                                        sr = await self.adapter.search(
+                                            qa.question,
+                                            sample_id,
+                                            self._results.get("index"),
+                                            question_id=qa.question_id,
+                                        )
+                                    record = ctx.record(result_data={
+                                        "question_id": qa.question_id,
+                                        "conversation_id": sample_id,
+                                        "date": date_str,
+                                    })
+                                    latency = record.elapsed_seconds
+                                else:
+                                    start = time.perf_counter()
+                                    sr = await self.adapter.search(
+                                        qa.question,
+                                        sample_id,
+                                        self._results.get("index"),
+                                        question_id=qa.question_id,
+                                    )
+                                    latency = time.perf_counter() - start
                                 result["search_latency"].append({
                                     "question_id": qa.question_id,
                                     "conversation_id": sample_id,
@@ -349,7 +366,7 @@ class Pipeline:
 
         # Process samples (parallel or serial based on config)
         add_search_stage_start = time_module.time()
-        sample_parallel = self.adapter.config.get("sample_parallel", True)
+        sample_parallel = False if self._serial else self.adapter.config.get("sample_parallel", True)
         if sample_data:
             if sample_parallel:
                 # Process and save incrementally as each sample completes
@@ -633,7 +650,7 @@ class Pipeline:
         qa_pairs: List[Any],
         ordering_info: Dict[str, Any],
     ) -> List[SearchResult]:
-        concurrency = self.adapter.config.get("search", {}).get("num_workers", 5)  # control concurrency
+        concurrency = 1 if self._serial else self.adapter.config.get("search", {}).get("num_workers", 5)
         semaphore = asyncio.Semaphore(concurrency)
 
         async def search_one(qa):
@@ -652,39 +669,6 @@ class Pipeline:
         tasks = [search_one(qa) for qa in qa_pairs]
         return await asyncio.gather(*tasks)
 
-    async def _run_answer_for_qas(
-        self,
-        qa_pairs: List[Any],
-        search_results: List[SearchResult],
-    ) -> List[AnswerResult]:
-        from src.formatters import format_context
-
-        concurrency = 10
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def answer_one(qa, sr):
-            async with semaphore:
-                context = format_context(sr)
-                answer = await self.adapter.answer(
-                    query=qa.question,
-                    context=context,
-                    conversation_id=sr.conversation_id,
-                    search_result=sr,
-                )
-                return AnswerResult(
-                    question_id=qa.question_id,
-                    question=qa.question,
-                    answer=answer,
-                    golden_answer=qa.answer,
-                    category=qa.category,
-                    conversation_id=sr.conversation_id,
-                    formatted_context=context,
-                    metadata=qa.metadata,
-                )
-
-        tasks = [answer_one(qa, sr) for qa, sr in zip(qa_pairs, search_results)]
-        return await asyncio.gather(*tasks)
-
     async def _run_answer_for_qas_with_progress(
         self,
         qa_pairs: List[Any],
@@ -692,23 +676,37 @@ class Pipeline:
     ) -> List[AnswerResult]:
         """Run answer with progress bar and incremental save."""
         pbar = tqdm(total=len(qa_pairs), desc="💬 ANSWER", leave=True)
-        concurrency = 10
+        concurrency = 1 if self._serial else 10
         semaphore = asyncio.Semaphore(concurrency)
 
         all_results: List[AnswerResult] = []
         existing_results = self._results.get("answer_results", [])
         answered_count = len(existing_results)
+        per_op_tracker = self.per_op_tracker
 
         async def answer_one(qa, sr):
             async with semaphore:
                 from src.formatters import format_context
                 context = format_context(sr)
-                answer = await self.adapter.answer(
-                    query=qa.question,
-                    context=context,
-                    conversation_id=sr.conversation_id,
-                    search_result=sr,
-                )
+                if per_op_tracker:
+                    with per_op_tracker.track("answer") as ctx:
+                        answer = await self.adapter.answer(
+                            query=qa.question,
+                            context=context,
+                            conversation_id=sr.conversation_id,
+                            search_result=sr,
+                        )
+                    ctx.record(result_data={
+                        "question_id": qa.question_id,
+                        "conversation_id": sr.conversation_id,
+                    })
+                else:
+                    answer = await self.adapter.answer(
+                        query=qa.question,
+                        context=context,
+                        conversation_id=sr.conversation_id,
+                        search_result=sr,
+                    )
                 pbar.update(1)
                 return AnswerResult(
                     question_id=qa.question_id,

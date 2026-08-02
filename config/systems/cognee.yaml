@@ -27,6 +27,14 @@ llm:
   llm_args: {"extra_body": {"thinking": {"type": "disabled"}}}
 
 # =============================================================================
+# LLM Proxy (token tracking)
+# =============================================================================
+# Route LLM traffic through a local proxy that counts tokens. Uncomment to
+# enable — requires the proxy running (python -m src.utils.llm_proxy).
+# Embedding traffic is NOT affected and goes directly to the provider.
+llm_proxy_url: "http://localhost:18443/v1"
+
+# =============================================================================
 # Embedding (SiliconFlow Vectorize via openai_compatible)
 # =============================================================================
 # Builder exports these as OS env vars (EMBEDDING_PROVIDER / EMBEDDING_MODEL /
@@ -44,8 +52,8 @@ embedding:
 # =============================================================================
 # Relative paths are resolved against the harness cwd. Override these to point
 # at a project-local cache so re-runs pick up where they left off.
-data_root_directory: ".cognee/data"
-system_root_directory: ".cognee/system"
+data_root_directory: "D:/cg/data"
+system_root_directory: "D:/cg/system"
 
 # =============================================================================
 # Adapter knobs (consumed by CogneeAdapter)
@@ -77,13 +85,22 @@ neighborhood_depth: 1
 # Cognee chunker token budget for cognify.
 chunk_size: 1024
 
+# Pipeline concurrency (consumed by runner.py, not the adapter).
+add:
+  num_workers: 5
+
+# SQLite busy timeout in seconds. Only applies when using the default SQLite
+# backend. Increase this if you see "database is locked" with more workers.
+sqlite_timeout: 300
+
 # =============================================================================
 # Builder knobs (consumed by CogneeBuilder)
 # =============================================================================
-# Multi-tenant access control. False (default) matches BEAM's posture — keeps
-# per-dataset isolation without strict auth. Enable only if your environment
-# requires full per-user backend isolation.
-enable_backend_access_control: false
+# Multi-tenant access control. When enabled, each (user, dataset) pair gets
+# its own physical Ladybug graph file at databases/{user_id}/{dataset_id}.lbug,
+# giving true per-sample data isolation. Without it, all datasets share a single
+# graph — graph traversal crosses sample boundaries and degrades as data grows.
+enable_backend_access_control: true
 
 # Cognee's structured-output framework for entity extraction. "instructor"
 # supports OpenAI / Azure / Anthropic / Gemini / Ollama / Bedrock / BAML.

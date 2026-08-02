@@ -16,11 +16,13 @@ from src.trackers.system_trackers.registry import get_tracker, list_trackers
 # Import all trackers to register them
 from src.trackers.system_trackers.default import DefaultTracker
 from src.trackers.system_trackers.hindsight import HindsightTracker  # noqa: F401
+from src.trackers.system_trackers.cognee import CogneeTracker  # noqa: F401
 
 __all__ = [
     "SystemTracker",
     "DefaultTracker",
     "HindsightTracker",
+    "CogneeTracker",
     "register_tracker",
     "get_tracker",
     "list_trackers",

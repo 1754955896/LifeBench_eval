@@ -308,9 +308,6 @@ class CogneeAdapter(BaseAdapter):
         for conv_id, texts in texts_by_user.items():
             ds = self._dataset_name(conv_id)
             try:
-                # cognee reads LLM/embedding config from os.environ (set by
-                # the builder). Keeping the API calls keyword-only here
-                # ensures search/add/answer share one configuration.
                 await cognee.add(texts, dataset_name=ds)
                 if expect_search:
                     await cognee.cognify(

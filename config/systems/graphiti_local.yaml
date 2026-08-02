@@ -9,8 +9,8 @@ adapter: "graphiti_local"
 
 builder: "graphiti_local"
 
-# Builder configuration (relative to systems/graphiti/)
-docker_compose: "systems/graphiti/local/docker-compose.local.yml"
+# Builder configuration (relative to project_root)
+docker_compose: "systems/graphiti/docker-compose.yml"
 docker_wait: 120
 
 # Neo4j connection (used by adapter) - use existing container
@@ -30,12 +30,21 @@ llm:
   temperature: 0
   max_tokens: 32768
 
-# Embedder settings
+# Embedder settings — reads VECTORIZE_* env vars directly in adapter
 embedder:
-  api_key: "${EMBEDDING_API_KEY:-${LLM_API_KEY}}"
-  base_url: "${EMBEDDING_BASE_URL:-${LLM_BASE_URL}}"
-  model: "${EMBEDDING_MODEL:}"
-  dimension: "1024"
+  provider: "${VECTORIZE_PROVIDER}"
+  api_key: "${VECTORIZE_API_KEY}"
+  base_url: "${VECTORIZE_BASE_URL}"
+  model: "${VECTORIZE_MODEL}"
+  dimension: "${VECTORIZE_DIMENSIONS}"
+
+# Rerank / Cross-encoder settings — reads RERANK_* env vars directly in adapter
+# Leave RERANK_PROVIDER unset to disable cross-encoder reranking.
+rerank:
+  provider: "${RERANK_PROVIDER}"
+  api_key: "${RERANK_API_KEY}"
+  base_url: "${RERANK_BASE_URL}"
+  model: "${RERANK_MODEL}"
 
 # Search settings
 search:

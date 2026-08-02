@@ -1,8 +1,11 @@
 """
-Graphiti Local Builder - starts Graphiti API server via docker compose (local standalone mode).
+Graphiti Local Builder — ensures Neo4j is accessible for direct-connect mode.
 
-This builder uses docker-compose.local.yml which combines Neo4j and Graphiti API
-in a single standalone deployment, simpler than the full distributed setup.
+The graphiti_local adapter connects to Neo4j directly (bolt://) rather than
+through the HTTP API server. This builder's role is:
+  1. Verify Neo4j is reachable (bolt + HTTP health checks)
+  2. Optionally start Neo4j via docker compose if configured
+  3. Tear down docker services on cleanup (if it started them)
 """
 
 import asyncio
@@ -17,103 +20,108 @@ from src.builders.registry import register_builder
 
 logger = logging.getLogger(__name__)
 
+# Default Neo4j ports
+BOLT_PORT = 7687
+HTTP_PORT = 7474
 
-def _load_env_config(project_env: Path) -> dict:
-    """Load configuration from project .env file.
 
-    Args:
-        project_env: Path to LifeBench_eval/.env
-
-    Returns:
-        Dict with api_key, base_url, model, vectorize_api_key, embedding settings
-    """
-    config = {}
-    if project_env.exists():
-        with open(project_env, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    config[key] = value
-
-    llm_base = config.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    if not llm_base.endswith("/v1"):
-        llm_base = llm_base.rstrip("/") + "/v1"
-
-    config["openai_api_key"] = config.get("LLM_API_KEY", "")
-    config["openai_base_url"] = llm_base
-    config["chat_model"] = config.get("LLM_MODEL", "deepseek-v4-flash")
-
-    return config
+def _load_env(env_path: Path) -> dict:
+    """Parse a .env file into a dict."""
+    cfg: dict = {}
+    if not env_path.exists():
+        return cfg
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            cfg[key] = value
+    return cfg
 
 
 @register_builder("graphiti_local")
 class GraphitiLocalBuilder(BaseBuilder):
-    """Graphiti local builder that starts/stops local Graphiti API via docker compose.
+    """Graphiti local builder that ensures Neo4j is running.
 
-    Uses docker-compose.local.yml which combines Neo4j + Graphiti API in one file.
-    Simpler than the full distributed setup.
+    graphiti_local connects directly to Neo4j via bolt:// — it does NOT use
+    the Graphiti HTTP API server. This builder only manages the Neo4j dependency.
 
     Configuration:
-        docker_compose: Path to docker-compose.local.yml (relative to project root)
-        docker_wait: Seconds to wait after starting services (default 120)
+        neo4j_uri:      Neo4j bolt URI  (default: bolt://localhost:7687)
+        neo4j_http_uri: Neo4j HTTP URI  (default: http://localhost:7474)
+        neo4j_user:     Neo4j username  (default: neo4j)
+        neo4j_password: Neo4j password  (default: password)
+
+        docker_compose: Path to docker-compose file that includes a neo4j
+                        service (relative to project_root).
+                        Default: docker-compose.yml (Graphiti's own)
+        start_docker:   Whether to attempt docker compose up (default: True)
+        docker_wait:    Max seconds to wait for neo4j to become healthy
+                        (default: 120)
     """
 
     def __init__(self, config: dict, project_root: Optional[str] = None):
         super().__init__(config, project_root)
-        self.docker_compose = config.get("docker_compose", "local/docker-compose.local.yml")
+        self.neo4j_uri = config.get("neo4j_uri", "bolt://localhost:7687")
+        self.neo4j_http_uri = config.get("neo4j_http_uri", "http://localhost:7474")
+        self.neo4j_user = config.get("neo4j_user", "neo4j")
+        self.neo4j_password = config.get("neo4j_password", "password")
+        self.docker_compose = config.get("docker_compose", "docker-compose.yml")
+        self.start_docker = config.get("start_docker", True)
         self.docker_wait = config.get("docker_wait", 120)
-        self._started = False
+        self._started_by_us = False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def build(self) -> bool:
-        """
-        Start Neo4j via docker if not running, then verify health.
+        """Ensure Neo4j is healthy and reachable.
 
-        graphiti_local connects directly to Neo4j, not via HTTP API.
-
-        Returns:
-            True if Neo4j is running, False on failure
+        Returns True if Neo4j is ready, False otherwise.
         """
-        # Check if Neo4j is already healthy
-        if await self._check_health():
-            logger.info("Neo4j is already running at localhost:7474")
-            self._started = True
+        # 1. Already healthy?
+        if await self._check_neo4j():
+            logger.info("Neo4j is already running and healthy")
             return True
 
-        # Try to start docker services
-        project_root = self._get_project_root()
-        if project_root:
-            logger.info("Neo4j not running, attempting to start docker services...")
-            if await self._start_docker(project_root):
-                self._started = True
-                return True
+        # 2. Try docker compose if configured
+        if self.start_docker:
+            project_root = self._resolve_project_root()
+            if project_root:
+                compose_path = project_root / self.docker_compose
+                if compose_path.exists():
+                    logger.info("Neo4j not running — starting via docker compose: %s", compose_path)
+                    if await self._docker_up(compose_path):
+                        self._started_by_us = True
+                        return True
 
-        logger.error("Neo4j is not running at localhost:7474")
-        logger.info("Please start Neo4j first")
+        # 3. Give up with helpful message
+        logger.error(
+            "Neo4j is not reachable at %s / %s. "
+            "Start Neo4j manually or set start_docker=True with a valid docker_compose path.",
+            self.neo4j_uri, self.neo4j_http_uri,
+        )
         return False
 
     async def cleanup(self) -> bool:
-        """
-        Stop Graphiti API server via docker compose.
-
-        Returns:
-            True if successful
-        """
-        if not self._started:
-            logger.info("Graphiti local builder not started, nothing to cleanup")
+        """Stop docker services if we started them."""
+        if not self._started_by_us:
+            logger.info("GraphitiLocalBuilder: nothing to clean up (Neo4j was not started by us)")
             return True
 
-        project_root = Path(self.project_root) if self.project_root else self._get_project_root()
-        if not project_root or not self.docker_compose:
+        project_root = self._resolve_project_root()
+        if not project_root:
             return True
 
         compose_path = project_root / self.docker_compose
         if not compose_path.exists():
-            logger.warning(f"Docker compose file not found: {compose_path}")
+            logger.warning("Docker compose file not found: %s", compose_path)
             return True
 
         try:
-            logger.info(f"Stopping docker services: {self.docker_compose}")
+            logger.info("Stopping docker services: %s", self.docker_compose)
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_path), "down"],
                 cwd=str(compose_path.parent),
@@ -121,143 +129,138 @@ class GraphitiLocalBuilder(BaseBuilder):
                 text=True,
             )
             if result.returncode != 0:
-                logger.error(f"Docker stop failed: {result.stderr}")
+                logger.error("docker compose down failed: %s", result.stderr.strip())
                 return False
             logger.info("Docker services stopped")
-            self._started = False
+            self._started_by_us = False
             return True
-        except Exception as e:
-            logger.error(f"Failed to stop docker services: {e}")
+        except Exception as exc:
+            logger.error("Failed to stop docker services: %s", exc)
             return False
 
-    def _get_project_root(self) -> Optional[Path]:
-        """Get project root from project_root config or this file's location."""
-        if self.project_root:
-            return Path(self.project_root)
-        # Try to infer from this file's location
-        builder_path = Path(__file__).parent
-        # src/builders/graphiti_local_builder.py -> src/ -> LifeBench_eval/
-        project_root = builder_path.parent.parent
-        if project_root.exists():
-            return project_root.resolve()
-        return None
+    def get_status(self):
+        return {
+            "name": self.__class__.__name__,
+            "started_by_us": self._started_by_us,
+            "neo4j_uri": self.neo4j_uri,
+            "docker_compose": self.docker_compose,
+        }
 
-    async def _start_docker(self, project_root: Path) -> bool:
-        """Start docker compose services."""
-        compose_path = project_root / self.docker_compose
-        if not compose_path.exists():
-            logger.error(f"Docker compose file not found: {compose_path}")
-            return False
+    # ------------------------------------------------------------------
+    # Health checks
+    # ------------------------------------------------------------------
 
-        try:
-            # Check if containers are already running
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "ps", "-q"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            already_running = bool(result.stdout.strip())
+    async def _check_neo4j(self) -> bool:
+        """Check Neo4j HTTP interface (port 7474).
 
-            if already_running:
-                logger.info("Services already running, checking health...")
-                if await self._check_health():
-                    logger.info("Services already healthy")
-                    return True
-                else:
-                    logger.warning("Services running but not healthy, restarting...")
-
-            # Start services fresh
-            logger.info(f"Starting docker services: {self.docker_compose}")
-
-            # Create .env file from LifeBench_eval/.env
-            env_config = _load_env_config(project_root / ".env")
-            env_path = compose_path.parent / ".env"
-            env_content = f"""OPENAI_API_KEY={env_config.get('openai_api_key', '')}
-OPENAI_BASE_URL={env_config.get('openai_base_url', 'https://api.deepseek.com/v1')}
-"""
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(env_content)
-
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_path), "up", "-d"],
-                cwd=str(compose_path.parent),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f"Docker start failed: {result.stderr}")
-                return False
-            logger.info("Docker services started")
-
-            # Wait for services to be healthy
-            if not await self._wait_for_healthy(compose_path):
-                logger.error("Services failed to become healthy")
-                return False
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start docker services: {e}")
-            return False
-
-    async def _wait_for_healthy(self, compose_path: Path, timeout: int = 180) -> bool:
-        """Wait for graphiti API and neo4j to be fully healthy."""
-        import urllib.request
-
-        start = time.time()
-        check_interval = 10
-
-        while time.time() - start < timeout:
-            elapsed = int(time.time() - start)
-
-            # Check 1: graphiti API is responding
-            try:
-                req = urllib.request.Request(
-                    "http://localhost:8000/healthcheck",
-                    method="GET"
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    if resp.status == 200:
-                        logger.info(f"Graphiti API responding ({elapsed}s)")
-            except Exception:
-                logger.info(f"Waiting for graphiti API... ({elapsed}s/{timeout}s)")
-                await asyncio.sleep(check_interval)
-                continue
-
-            # Check 2: neo4j is responding
-            try:
-                req = urllib.request.Request(
-                    "http://localhost:7474",
-                    method="GET"
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    logger.info("Neo4j is responding")
-                    logger.info("Graphiti API and neo4j are fully healthy")
-                    return True
-            except Exception:
-                logger.info(f"Waiting for neo4j... ({elapsed}s/{timeout}s)")
-                await asyncio.sleep(check_interval)
-                continue
-
-        return False
-
-    async def _check_health(self) -> bool:
-        """Check if Neo4j is healthy at localhost:7687."""
+        The HTTP endpoint is the most reliable signal that Neo4j is fully up.
+        """
         import urllib.request
 
         try:
-            # Check Neo4j HTTP interface
-            req = urllib.request.Request("http://localhost:7474")
+            req = urllib.request.Request(self.neo4j_http_uri, method="GET")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return resp.status == 200
         except Exception:
             return False
 
-    def get_status(self):
-        """Return builder status."""
-        return {
-            "name": self.__class__.__name__,
-            "started": self._started,
-            "docker_compose": self.docker_compose,
-        }
+    # ------------------------------------------------------------------
+    # Docker management
+    # ------------------------------------------------------------------
+
+    async def _docker_up(self, compose_path: Path) -> bool:
+        """Start docker compose services and wait for Neo4j to be healthy."""
+        try:
+            # Write .env so docker compose picks up API keys
+            self._write_docker_env(compose_path)
+
+            # Check if already running
+            already = await self._docker_ps(compose_path)
+
+            if already:
+                logger.info("Docker services already running, waiting for health...")
+                return await self._wait_healthy()
+
+            # Start fresh
+            logger.info("docker compose up -d ...")
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_path), "up", "-d", "neo4j"],
+                cwd=str(compose_path.parent),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                logger.error("docker compose up failed: %s", result.stderr.strip())
+                return False
+
+            logger.info("Docker services started, waiting for Neo4j to become healthy...")
+            return await self._wait_healthy()
+
+        except Exception as exc:
+            logger.error("Failed to start docker services: %s", exc)
+            return False
+
+    async def _docker_ps(self, compose_path: Path) -> bool:
+        """Return True if docker compose services are already running."""
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_path), "ps", "-q"],
+            cwd=str(compose_path.parent),
+            capture_output=True,
+            text=True,
+        )
+        return bool(result.stdout.strip())
+
+    async def _wait_healthy(self, timeout: int | None = None) -> bool:
+        """Poll Neo4j HTTP endpoint until healthy or timeout."""
+        if timeout is None:
+            timeout = self.docker_wait
+
+        start = time.time()
+        interval = 5
+
+        while time.time() - start < timeout:
+            elapsed = int(time.time() - start)
+            if await self._check_neo4j():
+                logger.info("Neo4j is healthy (%ds)", elapsed)
+                return True
+            logger.info("Waiting for Neo4j... (%ds/%ds)", elapsed, timeout)
+            await asyncio.sleep(interval)
+
+        logger.error("Neo4j failed to become healthy within %ds", timeout)
+        return False
+
+    def _write_docker_env(self, compose_path: Path) -> None:
+        """Write a .env file next to the compose file so docker picks up keys."""
+        project_root = self._resolve_project_root()
+        env_config: dict = {}
+        if project_root:
+            env_config = _load_env(project_root / ".env")
+
+        api_key = env_config.get("LLM_API_KEY", env_config.get("OPENAI_API_KEY", ""))
+        base_url = env_config.get("LLM_BASE_URL", env_config.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1"))
+        if not base_url.endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+
+        env_path = compose_path.parent / ".env"
+        content = (
+            f"OPENAI_API_KEY={api_key}\n"
+            f"OPENAI_BASE_URL={base_url}\n"
+            f"NEO4J_USER={self.neo4j_user}\n"
+            f"NEO4J_PASSWORD={self.neo4j_password}\n"
+        )
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_project_root(self) -> Optional[Path]:
+        """Resolve project_root from config or infer from this file's location."""
+        if self.project_root:
+            return Path(self.project_root)
+        # src/builders/graphiti_local_builder.py -> src/ -> LifeBench_eval/
+        candidate = Path(__file__).resolve().parent.parent.parent
+        if candidate.exists():
+            return candidate
+        return None

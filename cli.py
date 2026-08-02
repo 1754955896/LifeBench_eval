@@ -128,6 +128,11 @@ async def main():
         action="store_true",
         help="Enable resource tracking for the memory system",
     )
+    parser.add_argument(
+        "--serial",
+        action="store_true",
+        help="Force serial execution, overriding all runner concurrency settings",
+    )
 
     args = parser.parse_args()
 
@@ -249,7 +254,6 @@ async def main():
         else:
             tracker_name = args.system
         print(f"\n[bold cyan]Initializing resource tracker for: {tracker_name}[/bold cyan]")
-        per_op_tracker = PerOpTracker(system_tracker, output_dir=output_dir)
         global_monitor = GlobalMonitor(
             tracker=system_tracker,
             interval=args.tracker_interval,
@@ -257,6 +261,11 @@ async def main():
         )
         global_monitor.start()
         print(f"  ✅ GlobalMonitor started (interval={args.tracker_interval}s)")
+        per_op_tracker = PerOpTracker(
+            backend=args.system,
+            output_dir=output_dir,
+            global_monitor=global_monitor,
+        )
 
     pipeline = Pipeline(
         adapter=adapter,
@@ -265,6 +274,7 @@ async def main():
         filter_categories=filter_categories,
         debug=args.debug,
         per_op_tracker=per_op_tracker,
+        serial=args.serial,
     )
 
     print(f"  ✅ Created pipeline, output: {output_dir}")
@@ -295,7 +305,7 @@ async def main():
                 print(f"  Avg Memory: {summary.get('avg_memory_mb', 'N/A')} MB")
                 print(f"  Peak CPU: {summary.get('peak_cpu_percent', 'N/A')}%")
                 print(f"  Storage Delta: {summary.get('storage_delta_mb', 'N/A')} MB")
-            print(f"  Timeline saved to: [cyan]{output_dir / 'global_resource_timeline.json'}[/cyan]")
+            print(f"  Timeline saved to: [cyan]{output_dir / 'tracker' / 'global_resource_timeline.json'}[/cyan]")
 
         if hasattr(adapter, "close"):
             await adapter.close()
