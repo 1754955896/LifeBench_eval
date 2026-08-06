@@ -16,56 +16,23 @@ docker_compose: "systems/EverMemOS_bz/docker-compose.yaml"
 env_file: ".env"
 
 llm:
-  provider: "openai"
   model: "${LLM_MODEL}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
   temperature: 0.3
   max_tokens: 32768
 
-# Embedding model configuration (for vector search)
-vectorize:
-  provider: "${VECTORIZE_PROVIDER:deepinfra}"
-  api_key: "${VECTORIZE_API_KEY}"
-  base_url: "${VECTORIZE_BASE_URL:https://api.deepinfra.com/v1}"
-  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
-  timeout: 30
-  batch_size: 256
-  max_concurrent: 5
-
-# Rerank model configuration (for result re-ranking)
-rerank:
-  enabled: true
-  provider: "${RERANK_PROVIDER:deepinfra}"
-  api_key: "${RERANK_API_KEY}"
-  base_url: "${RERANK_BASE_URL:https://api.deepinfra.com/v1}"
-  model: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
-  timeout: 30
-  batch_size: 10
-  max_concurrent: 5
-
 add:
   num_workers: 15
-  enable_semantic_extraction: false
-  enable_clustering: true
-  enable_profile_extraction: false
 
 search:
   mode: "agentic"
+  top_k: 40
   lightweight_search_mode: "hybrid"  # bm25_only | hybrid | emb_only
-  use_hybrid_search: true
-  use_reranker: true  # Enable reranking
   num_workers: 1
-  hybrid_emb_candidates: 50
-  hybrid_bm25_candidates: 50
-  hybrid_rrf_k: 40
 
 answer:
   temperature: 0
   response_top_k: 30
-
-stats:
-  enabled: true
-  output_filename: token_stats.json
 
 sample_parallel: true

@@ -136,6 +136,8 @@ DEFAULT_CONFIG = {
             # PGVectorConfig defaults to 1536 if absent; force the size to match
             # MEM0_EMBEDDING_DIMS so the table is sized correctly at first startup.
             "embedding_model_dims": DEFAULT_EMBEDDING_DIMS,
+            "minconn": 10,
+            "maxconn": 30,
         },
     },
     "llm": {

@@ -100,13 +100,20 @@ class GraphitiLocalAdapter(BaseAdapter):
         return OpenAIGenericClient(config=llm_cfg, structured_output_mode="json_object")
 
     def _get_embedder_client(self):
-        """Create an embedder client from VECTORIZE_* env vars (SiliconFlow etc.)."""
+        """Create an embedder client from YAML config with env fallbacks."""
         from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 
         key = self._resolve_api_key("VECTORIZE")
         base = self._resolve_base_url("VECTORIZE")
-        model = os.environ.get("VECTORIZE_MODEL", "")
-        dim = int(os.environ.get("VECTORIZE_DIMENSIONS", "1024"))
+        model = self.embedder_config.get("model") or os.environ.get("VECTORIZE_MODEL", "")
+        dim = int(
+            self.embedder_config.get("dimension")
+            or os.environ.get("VECTORIZE_DIMENSIONS", "1024")
+        )
+        provider = (
+            self.embedder_config.get("provider")
+            or os.environ.get("VECTORIZE_PROVIDER", "unknown")
+        )
 
         if not key or not base:
             logger.warning("No embedder configured (VECTORIZE_API_KEY / VECTORIZE_BASE_URL) — "
@@ -123,7 +130,7 @@ class GraphitiLocalAdapter(BaseAdapter):
             embedding_dim=dim,
         )
         logger.info("Embedder: provider=%s model=%s dim=%d",
-                     os.environ.get("VECTORIZE_PROVIDER", "unknown"), cfg.embedding_model, cfg.embedding_dim)
+                     provider, cfg.embedding_model, cfg.embedding_dim)
         return OpenAIEmbedder(config=cfg)
 
     def _get_cross_encoder(self):

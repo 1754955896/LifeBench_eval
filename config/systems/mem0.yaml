@@ -8,6 +8,14 @@ adapter: "mem0"
 
 builder: "mem0"
 
+# =============================================================================
+# LLM Proxy (token tracking)
+# =============================================================================
+# Route LLM traffic through a local proxy that counts tokens. Uncomment to
+# enable — requires the proxy running (python -m src.utils.llm_proxy).
+# Embedding traffic is NOT affected and goes directly to the provider.
+# llm_proxy_url: "http://localhost:18443/v1"
+
 # Builder configuration (used by builder to start memory system)
 docker_compose: "systems/mem0/server/docker-compose.yaml"
 env_template: "systems/mem0/server/.env.example"
@@ -65,21 +73,13 @@ runtime_config:
 docker_wait: 30
 post_start_script: null
 
-# Multi-threaded batch processing
-thread_count: 2
-thread_batch_size: 1
-
 api_key: "${MEM0_API_KEY}"
-batch_size: 5
 max_retries: 5
-max_content_length: 8000
-add_interval: 0.5
-num_workers: 2
-post_add_wait_seconds: 180
+add_concurrency: 5  # Max concurrent ADD calls to mem0 server
+add_batch_size: 4  # Messages per batch call (multi-msg context for LLM extractor)
 infer: true
 
 llm:
-  provider: "openai"
   model: "${LLM_MODEL:deepseek-chat}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
@@ -90,19 +90,7 @@ search:
   top_k: 40
   search_interval: 0.05
   rerank: false
-  num_workers: 2
+  num_workers: 5
 
 answer:
   max_retries: 3
-
-# Reranker Configuration
-MEM0_RERANKER_ENABLED: "true"
-MEM0_RERANKER_PROVIDER: "cohere"
-MEM0_RERANKER_MODEL: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
-MEM0_RERANKER_API_KEY: "${RERANKER_API_KEY:}"
-MEM0_RERANKER_BASE_URL: "${RERANKER_BASE_URL:https://api.siliconflow.cn/v1}"
-MEM0_RERANKER_TOP_K: "25"
-
-# Default models
-MEM0_DEFAULT_LLM_MODEL: "deepseek-chat"
-MEM0_DEFAULT_EMBEDDER_MODEL: "custom"

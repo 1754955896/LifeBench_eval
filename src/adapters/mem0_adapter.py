@@ -10,13 +10,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from aiolimiter import AsyncLimiter
+
 
 from src.adapters.base import BaseAdapter, ChunkedMessage
 from src.adapters.registry import register_adapter
 from src.models.search import SearchResult, RetrievedMemory
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_items(items, k):
+    """Group *items* into sub-lists of size *k*."""
+    return [items[i:i + k] for i in range(0, len(items), k)]
 
 
 @register_adapter("mem0")
@@ -63,8 +68,6 @@ class Mem0Adapter(BaseAdapter):
         # This is important for historical data import where we want exact memories
         self.infer = config.get("infer", False)
 
-        # Prevent pathological bursts (not a substitute for per_add_delay_seconds).
-        self.limiter = AsyncLimiter(120, 60)
         self._session: Optional[aiohttp.ClientSession] = None
 
         # Per-conversation reference date (last session's date string),
@@ -74,6 +77,16 @@ class Mem0Adapter(BaseAdapter):
         # Per-message inter-call delay (seconds) to avoid hammering mem0.
         # Tuned to be small but non-zero; can be overridden via config["per_add_delay_seconds"].
         self.per_add_delay_seconds: float = float(config.get("per_add_delay_seconds", 0.0))
+
+        # Concurrent ADD calls within a session, controlled by a semaphore.
+        add_concurrency = int(config.get("add_concurrency", 1))
+        self._add_semaphore = asyncio.Semaphore(add_concurrency) if add_concurrency > 1 else None
+
+        # Batch messages into groups of add_batch_size per API call.
+        # Merging k messages into one request lets mem0's LLM extractor see
+        # full conversation context, producing better facts AND dramatically
+        # reducing the number of HTTP round-trips.
+        self.add_batch_size = int(config.get("add_batch_size", 4))
 
     @property
     def _headers(self) -> Dict[str, str]:
@@ -127,6 +140,11 @@ class Mem0Adapter(BaseAdapter):
         total_turns = 0
         latest_session_date_per_conv: Dict[str, str] = {}
 
+        # Collect all work items across all chunks first, so we can
+        # dispatch them concurrently rather than sequentially per session.
+        WorkItem = tuple  # (content, conversation_id, timestamp, metadata)
+
+        all_items: List[WorkItem] = []
         for chunk in chunks:
             if not chunk.messages:
                 continue
@@ -141,10 +159,6 @@ class Mem0Adapter(BaseAdapter):
                 if prev is None or session_ref_date > prev:
                     latest_session_date_per_conv[chunk.conversation_id] = session_ref_date
 
-            # Build per-session metadata. We pass both a short label
-            # (e.g. "May 8, 2023") and an ISO 8601 timestamp so the answer
-            # prompt can pick the most useful representation. dia_id from
-            # the first turn is preserved when present.
             session_iso = (
                 datetime.fromtimestamp(int(chunk.timestamp), tz=timezone.utc).isoformat()
                 if chunk.timestamp
@@ -157,7 +171,6 @@ class Mem0Adapter(BaseAdapter):
                 session_metadata["session_iso"] = session_iso
             if chunk.session_id:
                 session_metadata["session_id"] = chunk.session_id
-            # Keep raw original time string for forensic purposes.
             if chunk.session_time_str:
                 session_metadata["session_time_original"] = chunk.session_time_str
 
@@ -166,32 +179,58 @@ class Mem0Adapter(BaseAdapter):
                 if not content:
                     continue
 
-                # Per-turn metadata: each turn carries session date + its own
-                # dia_id. Storing on the memory itself (rather than only on the
-                # turn text) means search results still surface the date even
-                # when mem0's LLM extractor rewrites or omits it.
                 turn_metadata = dict(session_metadata)
                 dia_id = getattr(msg, "dia_id", None)
                 if dia_id:
                     turn_metadata["dia_id"] = dia_id
 
-                # Per-turn add: one message per API call, mirroring the official
-                # ``session_to_chunks(CHUNK_SIZE=1)`` behavior.
-                turn_payload = [{"role": "user", "content": content}]
-                success = await self._add_messages(
-                    turn_payload,
+                all_items.append((
+                    content,
                     chunk.conversation_id,
-                    timestamp=chunk.timestamp,
-                    metadata=turn_metadata or None,
-                )
-                total_turns += 1
-                if success:
-                    total_added += 1
-                else:
-                    total_failed += 1
+                    chunk.timestamp,
+                    turn_metadata or None,
+                ))
 
-                if self.per_add_delay_seconds > 0:
-                    await asyncio.sleep(self.per_add_delay_seconds)
+        total_turns = len(all_items)
+
+        # Group into batches so mem0's LLM sees k messages of context
+        # rather than one isolated turn at a time.
+        batches = _batch_items(all_items, self.add_batch_size)
+
+        async def _add_batch(batch: List[WorkItem]):
+            batch_messages = []
+            ts = None
+            meta = None
+            for content, conv_id, item_ts, item_meta in batch:
+                batch_messages.append({"role": "user", "content": content})
+                if ts is None:
+                    ts = item_ts
+                if meta is None:
+                    meta = item_meta
+            # All items in a batch share the same conversation_id; use the
+            # first one's.
+            _, conv_id, _, _ = batch[0]
+            return await self._add_messages(
+                batch_messages, conv_id, timestamp=ts, metadata=meta,
+            )
+
+        if self._add_semaphore is not None:
+            async def _add_with_limit(batch):
+                async with self._add_semaphore:
+                    return await _add_batch(batch)
+
+            tasks = [_add_with_limit(b) for b in batches]
+        else:
+            tasks = [_add_batch(b) for b in batches]
+
+        results = await asyncio.gather(*tasks)
+        # Each batch returns the server response dict (success) or None (failure).
+        msg_counts = [len(b) for b in batches]
+        total_added = sum(n for n, ok in zip(msg_counts, results) if ok is not None)
+        total_failed = total_turns - total_added
+
+        # Collect server responses from successful batches
+        server_responses = [r for r in results if r is not None]
 
         # Persist per-conversation reference dates for answer() to read.
         self._conversation_reference_date.update(latest_session_date_per_conv)
@@ -203,6 +242,7 @@ class Mem0Adapter(BaseAdapter):
             "total_turns": total_turns,
             "added": total_added,
             "failed": total_failed,
+            "server_responses": server_responses,
         }
 
     @staticmethod
@@ -286,7 +326,7 @@ class Mem0Adapter(BaseAdapter):
         user_id: str,
         timestamp: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> bool:
+    ) -> Optional[Dict[str, Any]]:
         """Add messages to Mem0.
 
         Args:
@@ -298,7 +338,7 @@ class Mem0Adapter(BaseAdapter):
                 (e.g. {"session_date": "May 8, 2023", "dia_id": "..."}).
 
         Returns:
-            True if successful, False otherwise
+            Server response dict on success, None on failure
         """
         session = await self._get_session()
 
@@ -310,34 +350,32 @@ class Mem0Adapter(BaseAdapter):
 
         for attempt in range(self.max_retries):
             try:
-                async with self.limiter:
-                    if self.mode == "oss":
-                        async with session.post(
-                            f"{self.host}/memories", json=payload
-                        ) as resp:
-                            if resp.status >= 500:
-                                raise aiohttp.ClientResponseError(
-                                    resp.request_info, resp.history, status=resp.status
-                                )
-                            resp.raise_for_status()
-                            await resp.json()
-                            return True
-                    else:
-                        # Cloud mode with event polling
-                        async with session.post(
-                            f"{self.host}/v3/memories/", json=payload
-                        ) as resp:
-                            resp.raise_for_status()
-                            resp_data = await resp.json()
+                if self.mode == "oss":
+                    async with session.post(
+                        f"{self.host}/memories", json=payload
+                    ) as resp:
+                        if resp.status >= 500:
+                            raise aiohttp.ClientResponseError(
+                                resp.request_info, resp.history, status=resp.status
+                            )
+                        resp.raise_for_status()
+                        return await resp.json()
+                else:
+                    # Cloud mode with event polling
+                    async with session.post(
+                        f"{self.host}/v3/memories/", json=payload
+                    ) as resp:
+                        resp.raise_for_status()
+                        resp_data = await resp.json()
 
-                        event_id = resp_data.get("event_id")
-                        if not event_id:
-                            logger.warning("V3 add returned no event_id")
-                            continue
+                    event_id = resp_data.get("event_id")
+                    if not event_id:
+                        logger.warning("V3 add returned no event_id")
+                        continue
 
-                        event_data = await self._wait_for_event(event_id)
-                        if event_data is not None:
-                            return True
+                    event_data = await self._wait_for_event(event_id)
+                    if event_data is not None:
+                        return event_data
 
             except Exception as exc:
                 logger.warning(
@@ -351,9 +389,9 @@ class Mem0Adapter(BaseAdapter):
                         "ADD failed after %d attempts for user=%s",
                         self.max_retries, user_id
                     )
-                    return False
+                    return None
 
-        return False
+        return None
 
     async def _get_event_status(self, event_id: str) -> Optional[Dict]:
         """Poll for event status (cloud mode only)."""
@@ -362,10 +400,9 @@ class Mem0Adapter(BaseAdapter):
 
         for attempt in range(3):
             try:
-                async with self.limiter:
-                    async with session.get(url) as resp:
-                        resp.raise_for_status()
-                        return await resp.json()
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
             except Exception as exc:
                 logger.warning(
                     "Event poll %d/3 failed for %s: %s",
@@ -438,23 +475,22 @@ class Mem0Adapter(BaseAdapter):
 
         for attempt in range(self.max_retries):
             try:
-                async with self.limiter:
-                    if self.mode == "oss":
-                        async with session.post(
-                            f"{self.host}/search", json=payload
-                        ) as resp:
-                            if resp.status >= 500:
-                                raise aiohttp.ClientResponseError(
-                                    resp.request_info, resp.history, status=resp.status
-                                )
-                            resp.raise_for_status()
-                            data = await resp.json()
-                    else:
-                        async with session.post(
-                            f"{self.host}/v3/memories/search/", json=payload
-                        ) as resp:
-                            resp.raise_for_status()
-                            data = await resp.json()
+                if self.mode == "oss":
+                    async with session.post(
+                        f"{self.host}/search", json=payload
+                    ) as resp:
+                        if resp.status >= 500:
+                            raise aiohttp.ClientResponseError(
+                                resp.request_info, resp.history, status=resp.status
+                            )
+                        resp.raise_for_status()
+                        data = await resp.json()
+                else:
+                    async with session.post(
+                        f"{self.host}/v3/memories/search/", json=payload
+                    ) as resp:
+                        resp.raise_for_status()
+                        data = await resp.json()
 
                 # Normalize results
                 results = data.get("results", data) if isinstance(data, dict) else data
@@ -533,18 +569,17 @@ class Mem0Adapter(BaseAdapter):
         session = await self._get_session()
 
         try:
-            async with self.limiter:
-                if self.mode == "oss":
-                    async with session.delete(
-                        f"{self.host}/memories",
-                        params={"user_id": user_id},
-                    ) as resp:
-                        resp.raise_for_status()
-                else:
-                    async with session.delete(
-                        f"{self.host}/v1/entities/user/{user_id}/"
-                    ) as resp:
-                        resp.raise_for_status()
+            if self.mode == "oss":
+                async with session.delete(
+                    f"{self.host}/memories",
+                    params={"user_id": user_id},
+                ) as resp:
+                    resp.raise_for_status()
+            else:
+                async with session.delete(
+                    f"{self.host}/v1/entities/user/{user_id}/"
+                ) as resp:
+                    resp.raise_for_status()
 
             logger.info("Deleted memories for user %s", user_id)
             return True
@@ -571,7 +606,6 @@ class Mem0Adapter(BaseAdapter):
             Generated answer string
         """
         llm_config = self.config.get("llm", {})
-        provider = llm_config.get("provider", "openai")
         model = llm_config.get("model", "deepseek-chat")
         api_key = llm_config.get("api_key", "")
         base_url = llm_config.get("base_url", "https://openrouter.ai/api/v1")
@@ -673,8 +707,11 @@ Work through Steps 1-7, then give your final answer after "ANSWER:"."""
             "max_tokens": max_tokens,
         }
 
-        try:
-            async with self.limiter:
+        answer_retries = int(
+            self.config.get("answer", {}).get("max_retries", self.max_retries)
+        )
+        for attempt in range(answer_retries):
+            try:
                 session = await self._get_session()
                 async with session.post(url, json=payload, headers=headers) as resp:
                     if resp.status >= 500:
@@ -684,12 +721,23 @@ Work through Steps 1-7, then give your final answer after "ANSWER:"."""
                     resp.raise_for_status()
                     data = await resp.json()
 
-            if isinstance(data, dict) and "choices" in data:
-                return data["choices"][0]["message"]["content"]
-            return str(data)
-        except Exception as exc:
-            logger.error("Answer generation failed: %s", str(exc)[:200])
-            return f"Error generating answer: {str(exc)[:100]}"
+                if isinstance(data, dict) and "choices" in data:
+                    return data["choices"][0]["message"]["content"]
+                return str(data)
+            except Exception as exc:
+                logger.warning(
+                    "ANSWER attempt %d/%d failed: %s",
+                    attempt + 1,
+                    answer_retries,
+                    str(exc)[:200],
+                )
+                if attempt < answer_retries - 1:
+                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+                else:
+                    logger.error("Answer generation failed: %s", str(exc)[:200])
+                    return f"Error generating answer: {str(exc)[:100]}"
+
+        return "Error generating answer"
 
     def _build_memories_text(self, results: list, reference_date: str) -> str:
         """Build memories text with chronological sorting for LOCOMO prompt.

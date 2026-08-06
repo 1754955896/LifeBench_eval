@@ -18,12 +18,8 @@ neo4j_uri: "bolt://localhost:7687"
 neo4j_user: "neo4j"
 neo4j_password: "password"
 
-# Graphiti API host (existing container)
-host: "http://localhost:8000"
-
 # LLM settings for fact extraction and answer generation
 llm:
-  provider: "openai"
   model: "${LLM_MODEL:deepseek-v4-flash}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com/v1}"

@@ -44,7 +44,30 @@ class PerOpTracker:
         self.backend = backend
         self.output_dir = Path(output_dir) if output_dir else None
         self.global_monitor = global_monitor
-        self._records: List[OpRecord] = []
+        self._records: List[OpRecord] = self._load_existing()
+
+    def _load_existing(self) -> List[OpRecord]:
+        if not self.output_dir:
+            return []
+        filepath = self.output_dir / "tracker" / "tracker_records.json"
+        if not filepath.exists():
+            return []
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            records = []
+            for d in data:
+                r = OpRecord(
+                    backend=d.get("backend", self.backend),
+                    operation=d.get("operation", ""),
+                    elapsed_seconds=d.get("elapsed_seconds", 0),
+                    result_data=d.get("result_data", {}),
+                    timestamp=d.get("timestamp", 0),
+                )
+                records.append(r)
+            return records
+        except Exception:
+            return []
 
     def track(self, operation: str) -> "_OpContext":
         return _OpContext(self.backend, operation, self)

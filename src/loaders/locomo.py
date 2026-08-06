@@ -163,6 +163,7 @@ class LoCoMoLoader(BaseLoader):
             ))
 
         return Dataset(
-            dataset_name="locomo",
+            dataset_name=kwargs.get("name", "locomo"),
             samples=samples,
+            metadata={"format": kwargs.get("dataset_format", "locomo")},
         )

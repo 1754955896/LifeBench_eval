@@ -25,27 +25,6 @@ llm:
   temperature: 0.3
   max_tokens: 32768
 
-# Embedding model configuration (for vector search)
-vectorize:
-  provider: "${VECTORIZE_PROVIDER:deepinfra}"
-  api_key: "${VECTORIZE_API_KEY}"
-  base_url: "${VECTORIZE_BASE_URL:https://api.deepinfra.com/v1}"
-  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
-  timeout: 30
-  batch_size: 256
-  max_concurrent: 5
-
-# Rerank model configuration (for result re-ranking)
-rerank:
-  enabled: true
-  provider: "${RERANK_PROVIDER:deepinfra}"
-  api_key: "${RERANK_API_KEY}"
-  base_url: "${RERANK_BASE_URL:https://api.deepinfra.com/v1}"
-  model: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
-  timeout: 30
-  batch_size: 10
-  max_concurrent: 5
-
 add:
   enable_semantic_extraction: false
   enable_clustering: true
@@ -61,7 +40,6 @@ search:
   hybrid_rrf_k: 40
 
 answer:
-  temperature: 0
   response_top_k: 30
 
 sample_parallel: true

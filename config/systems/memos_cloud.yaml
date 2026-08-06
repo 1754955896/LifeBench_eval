@@ -14,7 +14,6 @@ timeout: 60.0
 rpm: 60
 
 llm:
-  provider: "openai"
   model: "${LLM_MODEL}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"

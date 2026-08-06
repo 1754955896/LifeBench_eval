@@ -18,7 +18,6 @@ max_retries: 3
 
 # LLM config (used by builder to generate .env)
 llm:
-  provider: "openai"
   model: "${LLM_MODEL:deepseek-v4-flash}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com}"

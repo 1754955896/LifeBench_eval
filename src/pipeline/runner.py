@@ -191,6 +191,12 @@ class Pipeline:
 
                 sample_sessions = sample_data[sample_id]["sessions"]
                 sample_qas = sample_data[sample_id]["qas"]
+                search_config = self.adapter.config.get("search", {})
+                search_workers = (
+                    1 if self._serial else int(search_config.get("num_workers", 1))
+                )
+                search_semaphore = asyncio.Semaphore(max(1, search_workers))
+                search_interval = float(search_config.get("search_interval", 0))
 
                 if not sample_sessions:
                     return result
@@ -210,6 +216,9 @@ class Pipeline:
                     for date_str in pbar:
                         session_ids = [sid for d, sid in sample_sessions if d == date_str]
                         date_qas = [qa for qa in sample_qas if qa.metadata.get("ask_time", "").startswith(date_str)]
+                        new_add_latency = []
+                        new_search_latency = []
+                        new_search_results = []
 
                         has_session = bool(session_ids)
                         has_qa = bool(date_qas)
@@ -293,8 +302,10 @@ class Pipeline:
                                         "latency_seconds": round(latency, 3),
                                         "added": r.get("added", 0),
                                         "failed": r.get("failed", 0),
+                                        "metadata": r,
                                     }
                                     result["add_latency"].append(entry)
+                                    new_add_latency.append(entry)
                             finally:
                                 if debug_file:
                                     debug_file.write(f"\n{'=' * 80}\n")
@@ -304,45 +315,56 @@ class Pipeline:
 
                         # SEARCH: if date has QA and search stage requested and not done for this date
                         if has_qa and "search" in stages and not date_search_done:
-                            for qa in date_qas:
-                                if self.per_op_tracker:
-                                    with self.per_op_tracker.track("search") as ctx:
+                            async def search_one(qa):
+                                async with search_semaphore:
+                                    search_kwargs = self._get_search_kwargs(qa)
+                                    if self.per_op_tracker:
+                                        with self.per_op_tracker.track("search") as ctx:
+                                            sr = await self.adapter.search(
+                                                qa.question,
+                                                sample_id,
+                                                self._results.get("index"),
+                                                **search_kwargs,
+                                            )
+                                        record = ctx.record(result_data={
+                                            "question_id": qa.question_id,
+                                            "conversation_id": sample_id,
+                                            "date": date_str,
+                                        })
+                                        latency = record.elapsed_seconds
+                                    else:
+                                        start = time.perf_counter()
                                         sr = await self.adapter.search(
                                             qa.question,
                                             sample_id,
                                             self._results.get("index"),
-                                            question_id=qa.question_id,
+                                            **search_kwargs,
                                         )
-                                    record = ctx.record(result_data={
-                                        "question_id": qa.question_id,
-                                        "conversation_id": sample_id,
-                                        "date": date_str,
-                                    })
-                                    latency = record.elapsed_seconds
-                                else:
-                                    start = time.perf_counter()
-                                    sr = await self.adapter.search(
-                                        qa.question,
-                                        sample_id,
-                                        self._results.get("index"),
-                                        question_id=qa.question_id,
-                                    )
-                                    latency = time.perf_counter() - start
-                                result["search_latency"].append({
+                                        latency = time.perf_counter() - start
+                                    if search_interval > 0:
+                                        await asyncio.sleep(search_interval)
+                                    return sr, {
                                     "question_id": qa.question_id,
                                     "conversation_id": sample_id,
                                     "latency_seconds": round(latency, 3),
-                                })
+                                    }
+
+                            for sr, latency_entry in await asyncio.gather(
+                                *(search_one(qa) for qa in date_qas)
+                            ):
+                                result["search_latency"].append(latency_entry)
                                 result["search_results"].append(sr)
+                                new_search_latency.append(latency_entry)
+                                new_search_results.append(sr)
 
                         # Incremental append after each date (deduplicate by question_id)
-                        if result["search_results"]:
-                            self._append_search_results(result["search_results"])
-                        if result["add_latency"]:
-                            self._results.setdefault("add_latency", []).extend(result["add_latency"])
+                        if new_search_results:
+                            self._append_search_results(new_search_results)
+                        if new_add_latency:
+                            self._results.setdefault("add_latency", []).extend(new_add_latency)
                             self._save_json(self._results["add_latency"], "add_latency.json")
-                        if result["search_latency"]:
-                            self._results.setdefault("search_latency", []).extend(result["search_latency"])
+                        if new_search_latency:
+                            self._results.setdefault("search_latency", []).extend(new_search_latency)
                             self._save_json(self._results["search_latency"], "search_latency.json")
 
                         # Mark date-level completion (after save to avoid losing data on crash)
@@ -659,7 +681,7 @@ class Pipeline:
                     qa.question,
                     qa.metadata.get("conversation_id", ""),
                     self._results.get("index"),
-                    question_id=qa.question_id,
+                    **self._get_search_kwargs(qa),
                 )
                 interval = self.adapter.config.get("search", {}).get("search_interval", 0)
                 if interval > 0:
@@ -668,6 +690,19 @@ class Pipeline:
 
         tasks = [search_one(qa) for qa in qa_pairs]
         return await asyncio.gather(*tasks)
+
+    def _get_search_kwargs(self, qa: Any) -> Dict[str, Any]:
+        """Build adapter search kwargs from the system configuration."""
+        kwargs: Dict[str, Any] = {"question_id": qa.question_id}
+        search_config = self.adapter.config.get("search", {})
+        top_k = search_config.get("top_k")
+        if top_k is None:
+            top_k = self.adapter.config.get("top_k")
+        if top_k is None:
+            top_k = self.adapter.config.get("search_top_k")
+        if top_k is not None:
+            kwargs["top_k"] = int(top_k)
+        return kwargs
 
     async def _run_answer_for_qas_with_progress(
         self,
@@ -1147,10 +1182,23 @@ class Pipeline:
         }
 
     def _eval_result_to_dict(self, er) -> dict:
-        return {
+        result = {
             "total_questions": er.total_questions,
             "correct": er.correct,
             "accuracy": er.accuracy,
+            "weighted_score": er.weighted_score,
             "detailed_results": er.detailed_results,
             "metadata": er.metadata,
         }
+        question_type_stats = getattr(er, "question_type_stats", {})
+        result["question_type_stats"] = {
+            name: {
+                "name": stats.name,
+                "count": stats.count,
+                "correct": stats.correct,
+                "accuracy": stats.accuracy,
+                "weighted_score": stats.weighted_score,
+            }
+            for name, stats in question_type_stats.items()
+        }
+        return result

@@ -90,6 +90,20 @@ def _summarize(block: Optional[Dict[str, Any]]) -> str:
     model = cfg.get("model", "?")
     return f"{provider}@{base_url} model={model}"
 
+def _to_docker_url(url: str) -> str:
+    """Translate a URL for use inside Docker containers.
+
+    Inside Docker, ``localhost`` / ``127.0.0.1`` refer to the container
+    itself, not the host.  Rewrite them to ``host.docker.internal`` so
+    the container can reach services running on the host (e.g. llm_proxy).
+    """
+    if not url:
+        return url
+    return url.replace("127.0.0.1", "host.docker.internal").replace(
+        "localhost", "host.docker.internal"
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -257,6 +271,16 @@ class Mem0Builder(BaseBuilder):
         project_env = project_root / ".env"
         env_config = _load_env_config(project_env)
 
+        # When llm_proxy_url is configured, route LLM traffic through the
+        # proxy so tracker can count tokens via /token-stats. Embedding
+        # traffic is NOT redirected — it goes directly to the provider.
+        #
+        # The proxy runs on the host (localhost), but inside Docker
+        # "localhost" means the container itself.  Translate to
+        # host.docker.internal so the mem0 server can reach it.
+        llm_proxy_url = self.config.get("llm_proxy_url", "")
+        docker_proxy_url = _to_docker_url(llm_proxy_url)
+
         # DashScope API key from environment
         dashscope_api_key = os.environ.get("DASHSCOPE_API_KEY")
 
@@ -293,13 +317,18 @@ DASHSCOPE_EMBEDDING_MODEL={env_config['vectorize_model']}"""
 
 # DeepSeek LLM settings (native provider)
 DEEPSEEK_API_KEY={env_config['llm_api_key']}
-DEEPSEEK_API_BASE={env_config['llm_base_url']}
+DEEPSEEK_API_BASE={docker_proxy_url or env_config['llm_base_url']}
 
-# The server's DEFAULT_CONFIG (server/main.py) hardcodes the embedder to the
-# "openai" provider. To reuse the SiliconFlow OpenAI-compatible endpoint we
-# already configured for the framework, we point OPENAI_API_KEY/BASE at it.
-# Same trick for the LLM.
-OPENAI_API_KEY={env_config['vectorize_api_key']}
+# The server's DEFAULT_CONFIG (server/main.py) hardcodes both the LLM and
+# embedder to the "openai" provider, sharing a single OPENAI_API_KEY.
+# We need both to work before POST /configure overrides them.
+#
+# LLM: the OpenAI LLM class reads OPENAI_BASE_URL (not OPENAI_API_BASE).
+# Point it at the DeepSeek OpenAI-compatible endpoint so the LLM works
+# even before /configure pushes the native "deepseek" provider.
+OPENAI_API_KEY={env_config['llm_api_key']}
+OPENAI_BASE_URL={docker_proxy_url or env_config['llm_base_url']}
+# Legacy name — the OpenAI embedder still reads this as a fallback.
 OPENAI_API_BASE={env_config['vectorize_base_url']}
 
 {embedding_config}
@@ -347,7 +376,10 @@ MEM0_RERANKER_TOP_K=10
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(env_content)
             logger.info(f"Created .env file: {env_path}")
-            logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
+            if llm_proxy_url:
+                logger.info(f"  LLM: {env_config['llm_model']} via proxy @ {docker_proxy_url} (host: {llm_proxy_url})")
+            else:
+                logger.info(f"  LLM: {env_config['llm_model']} @ {env_config['llm_base_url']}")
             logger.info(f"  Reranker: {env_config['rerank_model']} @ {env_config['rerank_base_url']}")
             return True
         except Exception as e:
@@ -595,6 +627,12 @@ MEM0_RERANKER_TOP_K=10
         # LLM and embedder can each pick their own provider / model / base_url /
         # api_key independently. Field names like `base_url` map to provider-
         # specific keys (deepseek_base_url / openai_base_url) — see _map_config.
+        #
+        # When llm_proxy_url is configured, route LLM traffic through the proxy
+        # so tracker can count tokens. Embedding traffic is NOT redirected.
+        # Translate localhost→host.docker.internal (same reason as above).
+        llm_proxy_url = self.config.get("llm_proxy_url", "")
+        docker_proxy_url = _to_docker_url(llm_proxy_url)
         payload: Dict[str, Any] = {}
         rc = self.config.get("runtime_config", {})
         for side in ("llm", "embedder"):
@@ -603,6 +641,13 @@ MEM0_RERANKER_TOP_K=10
                 continue
             provider = side_cfg.get("provider", "openai")
             config_block = _map_config(provider, side_cfg)
+
+            # Route LLM traffic through proxy for token tracking
+            if side == "llm" and docker_proxy_url:
+                base_url_key = _BASE_URL_KEYS.get(provider, "openai_base_url")
+                config_block[base_url_key] = docker_proxy_url
+                logger.info("  LLM /configure traffic routed through proxy: %s", docker_proxy_url)
+
             payload[side] = {"provider": provider, "config": config_block}
 
         if not payload:

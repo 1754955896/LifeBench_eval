@@ -84,10 +84,49 @@ class GlobalMonitor:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
-        self._timeline: List[TimelineEntry] = []
+
+        # Load existing timeline for resume, and compute the offset so new
+        # samples continue with monotonically increasing elapsed_seconds.
+        existing_timeline, previous_duration = self._load_existing_timeline()
+        self._timeline: List[TimelineEntry] = existing_timeline
+        self._previous_duration: float = previous_duration
         self._start_time: float = 0.0
         self._stop_event = threading.Event()
         self._last_save_time: float = 0.0
+
+    def _load_existing_timeline(self):
+        """Load existing timeline from disk for resume.
+
+        Returns (entries, duration_seconds) so new samples continue with
+        monotonically-increasing elapsed_seconds.
+        """
+        if not self.output_dir:
+            return [], 0.0
+        filepath = self.output_dir / "tracker" / "global_resource_timeline.json"
+        if not filepath.exists():
+            return [], 0.0
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            samples = data.get("samples", [])
+            entries = []
+            for s in samples:
+                entries.append(TimelineEntry(
+                    timestamp=s.get("t", 0),
+                    elapsed_seconds=s.get("elapsed", 0),
+                    entry_type=s.get("entry_type", "sample"),
+                    operation=s.get("operation", ""),
+                    storage_mb=s.get("storage_mb", 0.0),
+                    memory_rss_mb=s.get("memory_rss_mb", 0.0),
+                    cpu_percent=s.get("cpu_percent", 0.0),
+                    extra=s.get("extra", {}),
+                ))
+            duration = data.get("summary", {}).get("duration_seconds", 0.0)
+            if entries and not duration:
+                duration = entries[-1].elapsed_seconds
+            return entries, duration
+        except Exception:
+            return [], 0.0
 
     def start(self) -> None:
         """Start the background monitoring thread."""
@@ -119,7 +158,7 @@ class GlobalMonitor:
         while self._running and not self._stop_event.is_set():
             try:
                 snap = self.tracker.snapshot()
-                elapsed = time.time() - self._start_time
+                elapsed = time.time() - self._start_time + self._previous_duration
 
                 entry = TimelineEntry(
                     timestamp=time.time(),
@@ -202,7 +241,7 @@ class GlobalMonitor:
         so downstream consumers can slice per-operation intervals from
         the surrounding periodic samples.
         """
-        elapsed = time.time() - self._start_time if self._start_time else 0.0
+        elapsed = (time.time() - self._start_time + self._previous_duration) if self._start_time else self._previous_duration
         entry = TimelineEntry(
             timestamp=time.time(),
             elapsed_seconds=elapsed,

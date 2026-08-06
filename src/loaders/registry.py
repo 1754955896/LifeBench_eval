@@ -46,13 +46,18 @@ def load_dataset(name: str, data_path: str, **kwargs) -> "Dataset":
     """Load dataset using appropriate loader."""
     from src.models.dataset import Dataset
 
-    # lifebench uses locomo format loader
-    if name == "lifebench":
-        _ensure_loader_loaded("locomo")
-        return _LOADER_REGISTRY["locomo"]().load(data_path, name=name, **kwargs)
+    dataset_format = kwargs.pop("dataset_format", None) or "locomo"
+    loader_name = {"lifebench": "locomo", "locomo": "locomo"}.get(dataset_format)
+    if loader_name is None:
+        raise ValueError(f"Unsupported dataset format: {dataset_format}")
 
-    _ensure_loader_loaded("locomo")
-    return _LOADER_REGISTRY["locomo"]().load(data_path, name=name, **kwargs)
+    _ensure_loader_loaded(loader_name)
+    return _LOADER_REGISTRY[loader_name]().load(
+        data_path,
+        name=name,
+        dataset_format=dataset_format,
+        **kwargs,
+    )
 
 
 def register_loader_module(name: str, module_path: str):

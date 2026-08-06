@@ -3,7 +3,7 @@ LLM Judge evaluator - type-aware evaluation for LifeBench.
 
 Based on LifeMem's evaluator with:
 - ONE unified type-aware prompt covers all question types
-- ONE judge call per question (temperature=0)
+- Configurable odd-numbered judge runs with majority voting (temperature=0)
 - Binary is_correct + per-point weighted score
 """
 
@@ -142,6 +142,11 @@ class LLMJudge(BaseEvaluator):
         self.base_url = llm_config.get(
             "base_url", "https://api.deepseek.com"
         )
+        self.num_runs = int(config.get("num_runs", 1))
+        if self.num_runs < 1:
+            raise ValueError("evaluation.num_runs must be at least 1")
+        if self.num_runs % 2 == 0:
+            raise ValueError("evaluation.num_runs must be odd for majority vote")
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -156,7 +161,10 @@ class LLMJudge(BaseEvaluator):
 
     async def evaluate(self, answer_results: List) -> EvaluationResult:
         print(f"\n{'=' * 60}")
-        print(f"Stage 4/4: Evaluate  [LLM Judge, model={self.model}]")
+        print(
+            "Stage 4/4: Evaluate  "
+            f"[LLM Judge, model={self.model}, runs={self.num_runs}]"
+        )
         print(f"{'=' * 60}")
 
         semaphore = asyncio.Semaphore(10)
@@ -199,6 +207,9 @@ class LLMJudge(BaseEvaluator):
                 count=ts["n"],
                 correct=ts["correct"],
                 accuracy=ts["correct"] / ts["n"] if ts["n"] else 0.0,
+                weighted_score=(
+                    ts["score_sum"] / ts["score_n"] if ts["score_n"] else None
+                ),
             )
 
         print(f"\n✅ Evaluation complete:")
@@ -211,9 +222,15 @@ class LLMJudge(BaseEvaluator):
             total_questions=total,
             correct=correct,
             accuracy=accuracy,
+            weighted_score=weighted_score,
             detailed_results=results,
             question_type_stats=question_type_stats,
-            metadata={"model": self.model, "evaluator": "llm_judge"},
+            metadata={
+                "model": self.model,
+                "evaluator": "llm_judge",
+                "num_runs": self.num_runs,
+                "aggregation": "majority_vote",
+            },
         )
 
     async def _evaluate_single(self, ar) -> dict:
@@ -223,14 +240,46 @@ class LLMJudge(BaseEvaluator):
         ask_time = meta.get("ask_time", "") or "（未提供）"
         score_points = meta.get("score_points") or []
 
-        verdict = await self._judge(
-            question=ar.question,
-            reference_answer=ar.golden_answer,
-            generated_answer=ar.answer,
-            question_types=question_types,
-            ask_time=ask_time,
-            score_points=score_points,
+        verdicts = []
+        for _ in range(self.num_runs):
+            verdicts.append(
+                await self._judge(
+                    question=ar.question,
+                    reference_answer=ar.golden_answer,
+                    generated_answer=ar.answer,
+                    question_types=question_types,
+                    ask_time=ask_time,
+                    score_points=score_points,
+                )
+            )
+
+        correct_votes = sum(int(v["is_correct"]) for v in verdicts)
+        is_correct = correct_votes * 2 >= self.num_runs
+        point_hits = []
+        for index, score_point in enumerate(score_points):
+            hit_votes = 0
+            for candidate in verdicts:
+                candidate_hits = candidate.get("point_hits", [])
+                if index < len(candidate_hits):
+                    hit = candidate_hits[index]
+                    hit_votes += int(
+                        hit.get("hit", False) if isinstance(hit, dict) else bool(hit)
+                    )
+            point_hits.append(
+                {
+                    "description": (score_point or {}).get("description", ""),
+                    "hit": hit_votes * 2 >= self.num_runs,
+                }
+            )
+
+        representative = next(
+            (v for v in verdicts if v["is_correct"] == is_correct), verdicts[0]
         )
+        verdict = {
+            "is_correct": is_correct,
+            "point_hits": point_hits,
+            "reasoning": representative.get("reasoning", ""),
+        }
 
         weighted = _weighted_score(score_points, verdict.get("point_hits", []))
 
@@ -244,6 +293,10 @@ class LLMJudge(BaseEvaluator):
             "weighted_score": weighted,
             "point_hits": verdict.get("point_hits", []),
             "reasoning": verdict.get("reasoning", ""),
+            "judge_votes": {
+                "correct": correct_votes,
+                "wrong": self.num_runs - correct_votes,
+            },
         }
 
     async def _judge(
