@@ -198,12 +198,18 @@ evidence_ranks 是一个数组，长度为{evidence_count}。
 QUALITY_SYSTEM = textwrap.dedent("""\
 你是记忆检索系统的质量评估员。判断给定的检索结果是否包含了回答问题的充足信息。
 
+**判断流程：**
+1. 先从参考答案中提取关键实体和事实：地名、人名、具体数字、时间、事件名称等
+2. 在检索结果中逐一搜索这些关键实体/事实
+3. 只有参考答案中**所有**关键实体/事实都能在检索结果中找到时，才判定信息充足
+
 标准：
 - 检索结果中包含回答问题所需的核心事实信息 → 充足
 - 检索结果缺失关键事实、只有话题沾边的内容、或完全无关 → 不充足
 - **不需要覆盖所有证据项**：只要检索结果中的信息足以支撑参考答案的核心内容，即为充足
 - 不要求检索结果本身已经组织成完整答案，只要求其中包含了足够的信息片段
-- 证据项和参考答案仅供你理解"回答该问题需要什么样的信息"，不参与充足性判断
+
+**硬约束：如果在检索结果中完全找不到参考答案的关键实体（如具体地名、人名、金额），则无论上下文的日期/场景多么相关，信息都不充足。**
 
 只输出JSON，不要额外文字。""")
 
@@ -221,10 +227,12 @@ QUALITY_USER_TEMPLATE = textwrap.dedent("""\
 {results_text}
 
 ## 任务
-1. 逐条累加阅读检索结果（从检索1开始），判断读到第几条时检索结果中的信息已经**足以支撑参考答案**。输出第一条使信息充足的检索结果序号（从1开始）。如果所有结果读完仍不足以支撑参考答案，则输出0。
-2. 列出所有对回答问题**有实质帮助**的检索结果的序号（supporting_ranks），按升序排列。这些是包含关键事实、可直接用于回答问题的结果。如果一条都没有，输出空数组[]。
+1. 先提取参考答案中的关键实体和事实（地名、人名、数字、时间等），然后在检索结果中逐一验证。
+2. 逐条累加阅读检索结果（从检索1开始），判断读到第几条时检索结果中的信息已经**足以支撑参考答案的全部关键实体/事实**。输出第一条使信息充足的检索结果序号（从1开始）。如果读完所有结果，参考答案的关键实体/事实仍有缺失，则输出0。
+3. 列出所有对回答问题**有实质帮助**的检索结果的序号（supporting_ranks），按升序排列。这些是包含关键事实、可直接用于回答问题的结果。如果一条都没有，输出空数组[]。
 
 **注意**：不需要覆盖全部证据项。只要检索结果提供了足够信息能得出参考答案的核心结论，就是充足。
+**关键**：如果参考答案中的具体地名、人名、数字在所有检索结果中均不存在，则min_sufficient_rank必须为0，不能因为上下文/日期匹配而判为充足。
 
 ## 输出格式
 {{"min_sufficient_rank": 3, "supporting_ranks": [1, 3]}}
@@ -349,7 +357,6 @@ class RecallJudge:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
         }
 
         for attempt in range(1, self.max_retries + 1):
@@ -482,7 +489,6 @@ class RecallJudge:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": self.temperature,
-            "max_tokens": 512,
         }
 
         for attempt in range(1, self.max_retries + 1):
@@ -497,6 +503,12 @@ class RecallJudge:
                     data = await resp.json()
 
                 content = data["choices"][0]["message"]["content"]
+                finish_reason = data["choices"][0].get("finish_reason", "")
+                if finish_reason == "length" and attempt < self.max_retries:
+                    print(f"  [RETRY {attempt}/{self.max_retries}] quality: output truncated (length)")
+                    await asyncio.sleep(2 * attempt)
+                    continue
+
                 result = self._parse_quality_response(content)
                 if result is not None:
                     return result
@@ -530,23 +542,38 @@ class RecallJudge:
                     obj = json.loads(content[start: end + 1])
                 except json.JSONDecodeError:
                     pass
-        if obj is None:
-            print(f"  [WARN] Unparseable quality response: {content[:200]}...")
-            return None
+        if obj is not None:
+            rank = obj.get("min_sufficient_rank")
+            if isinstance(rank, (int, float)):
+                rank = max(0, int(rank))
+            else:
+                rank = None
+            raw = obj.get("supporting_ranks", [])
+            if isinstance(raw, list):
+                supporting = sorted(set(int(r) for r in raw if isinstance(r, (int, float)) and int(r) > 0))
+            else:
+                supporting = []
+            if rank is not None:
+                return rank, supporting
 
-        rank = obj.get("min_sufficient_rank")
-        if isinstance(rank, (int, float)):
-            rank = max(0, int(rank))
-        else:
-            return None
-
-        raw = obj.get("supporting_ranks", [])
-        if isinstance(raw, list):
-            supporting = sorted(set(int(r) for r in raw if isinstance(r, (int, float)) and int(r) > 0))
-        else:
+        # JSON parse failed — try regex fallback for min_sufficient_rank
+        rank_match = re.search(
+            r'min_sufficient_rank["\s:]+(\d+)', content, re.IGNORECASE
+        )
+        if rank_match:
+            rank = max(0, int(rank_match.group(1)))
+            # Try to extract supporting_ranks array
+            arr_match = re.search(
+                r'supporting_ranks["\s:]+\[([^\]]*)\]', content, re.IGNORECASE
+            )
             supporting = []
+            if arr_match:
+                nums = re.findall(r'\d+', arr_match.group(1))
+                supporting = sorted(set(int(n) for n in nums if int(n) > 0))
+            return rank, supporting
 
-        return rank, supporting
+        print(f"  [WARN] Unparseable quality response: {repr(content[:300])}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +618,9 @@ async def evaluate_recall(
     for person in conv_data:
         for qa in person["qa"]:
             answer_map[qa["question_id"]] = qa.get("answer", "")
+
+    if output_path is None:
+        output_path = str(Path(results_dir) / "recall_results.json")
 
     judge = RecallJudge(llm_config)
     semaphore = asyncio.Semaphore(concurrency)
@@ -695,6 +725,7 @@ async def evaluate_recall(
                 done_since_save += 1
                 if done_since_save >= save_every:
                     _save_checkpoint(checkpoint_path, completed)
+                    _save_partial_results(output_path, items, completed, k_values, max_k)
                     done_since_save = 0
 
     if pending:
@@ -708,48 +739,21 @@ async def evaluate_recall(
     _save_checkpoint(checkpoint_path, completed)
 
     # Reconstruct ordered results
-    all_results: List[Tuple[str, List[List[int]], List[int], int, List[int]]] = []
-    for sr, ev in items:
-        qid = sr["question_id"]
-        default = {
-            "evidence_ranks": [[] for _ in ev],
-            "result_counts": [0] * max_k,
-            "min_sufficient_rank": -1,
-            "supporting_ranks": [],
-        }
-        entry = completed.get(qid, default)
-        all_results.append((
-            qid, entry["evidence_ranks"], entry["result_counts"],
-            entry.get("min_sufficient_rank", -1),
-            entry.get("supporting_ranks", []),
-        ))
+    summary = _build_recall_results(items, completed, k_values, max_k)
+
+    se_results = summary["per_question"]
+    all_results: List[Tuple[str, List[List[int]], List[int], int, List[int]]] = [
+        (
+            e["question_id"], e["evidence_ranks"], e["result_evidence_counts"],
+            e["min_sufficient_rank"], e["supporting_ranks"],
+        )
+        for e in se_results
+    ]
 
     # Compute metrics
     print(f"\n{'=' * 60}")
     print("Recall & Precision @K Results")
     print(f"{'=' * 60}")
-
-    summary = {"k_values": k_values, "per_question": []}
-
-    for qid, ev_ranks, res_counts, min_sr, supporting in all_results:
-        entry = {
-            "question_id": qid,
-            "evidence_ranks": ev_ranks,
-            "result_evidence_counts": res_counts,
-            "min_sufficient_rank": min_sr,
-            "supporting_ranks": supporting,
-        }
-        for k in k_values:
-            first_ranks = [r[0] if r else 0 for r in ev_ranks]
-            found = sum(1 for r in first_ranks if 1 <= r <= k)
-            entry[f"strict_recall@{k}"] = found / len(ev_ranks) if ev_ranks else 0.0
-            relevant_in_k = sum(1 for c in res_counts[:k] if c > 0)
-            entry[f"strict_precision@{k}"] = relevant_in_k / k
-            # Quality@K: answerable if 1 <= min_sufficient_rank <= k
-            entry[f"quality@{k}"] = 1 if (min_sr >= 1 and min_sr <= k) else 0
-        # Quality@all: answerable at any rank (based on full result set)
-        entry["quality@all"] = 1 if min_sr >= 1 else 0
-        summary["per_question"].append(entry)
 
     # Compute aggregate & print
     total_with_evidence = len(all_results)
@@ -803,8 +807,6 @@ async def evaluate_recall(
     print()
 
     # Save detailed output
-    if output_path is None:
-        output_path = str(Path(results_dir) / "recall_results.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
     print(f"Detailed results saved to: {output_path}")
@@ -826,6 +828,66 @@ def _save_checkpoint(path: Path, completed: Dict[str, Dict]):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"completed": entries}, f, ensure_ascii=False)
     os.replace(tmp, str(path))
+
+
+def _build_recall_results(
+    items: List[tuple],
+    completed: Dict[str, Dict],
+    k_values: List[int],
+    max_k: int,
+) -> dict:
+    """Build recall_results dict from completed judgments. Always includes all items."""
+    all_results: List[Tuple] = []
+    for sr, ev in items:
+        qid = sr["question_id"]
+        default = {
+            "evidence_ranks": [[] for _ in ev],
+            "result_counts": [0] * max_k,
+            "min_sufficient_rank": -1,
+            "supporting_ranks": [],
+        }
+        entry = completed.get(qid, default)
+        all_results.append((
+            qid, entry["evidence_ranks"], entry["result_counts"],
+            entry.get("min_sufficient_rank", -1),
+            entry.get("supporting_ranks", []),
+        ))
+
+    summary = {"k_values": k_values, "per_question": []}
+    for qid, ev_ranks, res_counts, min_sr, supporting in all_results:
+        pq = {
+            "question_id": qid,
+            "evidence_ranks": ev_ranks,
+            "result_evidence_counts": res_counts,
+            "min_sufficient_rank": min_sr,
+            "supporting_ranks": supporting,
+        }
+        for k in k_values:
+            first_ranks = [r[0] if r else 0 for r in ev_ranks]
+            found = sum(1 for r in first_ranks if 1 <= r <= k)
+            pq[f"strict_recall@{k}"] = found / len(ev_ranks) if ev_ranks else 0.0
+            relevant_in_k = sum(1 for c in res_counts[:k] if c > 0)
+            pq[f"strict_precision@{k}"] = relevant_in_k / k
+            pq[f"quality@{k}"] = 1 if (min_sr >= 1 and min_sr <= k) else 0
+        pq["quality@all"] = 1 if min_sr >= 1 else 0
+        summary["per_question"].append(pq)
+
+    return summary
+
+
+def _save_partial_results(
+    output_path: str,
+    items: List[tuple],
+    completed: Dict[str, Dict],
+    k_values: List[int],
+    max_k: int = 20,
+):
+    """Write current recall_results.json from completed work so far."""
+    summary = _build_recall_results(items, completed, k_values, max_k)
+    tmp = output_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, output_path)
 
 
 # ---------------------------------------------------------------------------
