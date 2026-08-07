@@ -206,7 +206,6 @@ QUALITY_SYSTEM = textwrap.dedent("""\
 标准：
 - 检索结果中包含回答问题所需的核心事实信息 → 充足
 - 检索结果缺失关键事实、只有话题沾边的内容、或完全无关 → 不充足
-- **不需要覆盖所有证据项**：只要检索结果中的信息足以支撑参考答案的核心内容，即为充足
 - 不要求检索结果本身已经组织成完整答案，只要求其中包含了足够的信息片段
 
 **硬约束：如果在检索结果中完全找不到参考答案的关键实体（如具体地名、人名、金额），则无论上下文的日期/场景多么相关，信息都不充足。**
@@ -217,22 +216,18 @@ QUALITY_USER_TEMPLATE = textwrap.dedent("""\
 ## 问题
 {question}
 
-## 参考答案（仅供理解问题核心，也是判断充足性的最终标准）
+## 参考答案（判断充足性的唯一标准）
 {reference_answer}
-
-## 证据项（回答该问题可能需要覆盖的关键信息，共{evidence_count}条）
-{evidence_text}
 
 ## 检索结果（共{result_count}条，按相关性从高到低排序）
 {results_text}
 
 ## 任务
-1. 先提取参考答案中的关键实体和事实（地名、人名、数字、时间等），然后在检索结果中逐一验证。
-2. 逐条累加阅读检索结果（从检索1开始），判断读到第几条时检索结果中的信息已经**足以支撑参考答案的全部关键实体/事实**。输出第一条使信息充足的检索结果序号（从1开始）。如果读完所有结果，参考答案的关键实体/事实仍有缺失，则输出0。
-3. 列出所有对回答问题**有实质帮助**的检索结果的序号（supporting_ranks），按升序排列。这些是包含关键事实、可直接用于回答问题的结果。如果一条都没有，输出空数组[]。
+1. 先从参考答案中提取关键信息点（地名、人名、数字、时间、事件等）。
+2. 逐条累加阅读检索结果（从检索1开始），判断读到第几条时检索结果已经**覆盖了参考答案的所有关键信息点**。输出第一条使信息充足的检索结果序号（从1开始）。如果读完所有结果，关键信息点仍有缺失，则输出0。
+3. 列出所有包含关键事实、对回答问题有实质帮助的检索结果序号（supporting_ranks），按升序排列。如果一条都没有，输出空数组[]。
 
-**注意**：不需要覆盖全部证据项。只要检索结果提供了足够信息能得出参考答案的核心结论，就是充足。
-**关键**：如果参考答案中的具体地名、人名、数字在所有检索结果中均不存在，则min_sufficient_rank必须为0，不能因为上下文/日期匹配而判为充足。
+**关键约束**：如果参考答案中的具体地名、人名、数字在所有检索结果中均不存在，min_sufficient_rank必须为0，不能因为上下文/日期匹配而判为充足。
 
 ## 输出格式
 {{"min_sufficient_rank": 3, "supporting_ranks": [1, 3]}}
@@ -293,7 +288,7 @@ class RecallJudge:
     """Calls LLM to judge evidence coverage in search results."""
 
     def __init__(self, config: dict):
-        self.model = "deepseek-v4-pro"
+        self.model = "deepseek-v4-flash"
         self.api_key = config.get("api_key", "")
         self.base_url = config.get("base_url", "https://api.deepseek.com")
         self.max_tokens = config.get("max_tokens", 4096)
@@ -388,6 +383,41 @@ class RecallJudge:
 
         return None
 
+    @staticmethod
+    def _repair_json(text: str) -> Optional[str]:
+        """Try to fix common LLM JSON bracket errors (flash models in particular).
+
+        When bracket counts are off, strip excess ``]`` before the final ``}``.
+        """
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+
+        # Count brackets; if ] > [, try removing trailing ] before }
+        open_b = text.count("[")
+        close_b = text.count("]")
+        if close_b > open_b:
+            excess = close_b - open_b
+            # Reverse the text, remove up to `excess` ``]`` chars that appear
+            # immediately before the trailing ``}`` (and optional whitespace).
+            rev = text[::-1]
+            for _ in range(excess):
+                m = re.search(r'(\s*)\]', rev)
+                if m:
+                    pos = m.start()
+                    rev = rev[:pos] + rev[pos + 1:]
+                else:
+                    break
+            text = rev[::-1]
+
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            return None
+
     def _parse_response(
         self, content: str, expected_ev: int, expected_results: int
     ) -> Optional[Tuple[List[List[int]], List[int]]]:
@@ -395,17 +425,23 @@ class RecallJudge:
         m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
         obj = None
         if m:
-            try:
-                obj = json.loads(m.group(1))
-            except json.JSONDecodeError:
-                pass
+            raw = m.group(1)
+            fixed = self._repair_json(raw)
+            if fixed:
+                try:
+                    obj = json.loads(fixed)
+                except json.JSONDecodeError:
+                    pass
         if obj is None:
             start, end = content.find("{"), content.rfind("}")
             if start != -1 and end > start:
-                try:
-                    obj = json.loads(content[start: end + 1])
-                except json.JSONDecodeError:
-                    pass
+                raw = content[start: end + 1]
+                fixed = self._repair_json(raw)
+                if fixed:
+                    try:
+                        obj = json.loads(fixed)
+                    except json.JSONDecodeError:
+                        pass
         if obj is None:
             print(f"  [WARN] Unparseable response: {content[:200]}...")
             return None
@@ -461,9 +497,6 @@ class RecallJudge:
         if result_count == 0:
             return 0, []
 
-        evidence_text = "\n\n".join(
-            _fmt_evidence(ev, i) for i, ev in enumerate(evidence_items)
-        )
         results_text = "\n".join(
             _fmt_search_result(r, i) for i, r in enumerate(search_results[:max_rank])
         )
@@ -471,8 +504,6 @@ class RecallJudge:
         user_prompt = QUALITY_USER_TEMPLATE.format(
             question=question,
             reference_answer=reference_answer,
-            evidence_count=len(evidence_items),
-            evidence_text=evidence_text,
             result_count=result_count,
             results_text=results_text,
         )
@@ -531,17 +562,23 @@ class RecallJudge:
         m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
         obj = None
         if m:
-            try:
-                obj = json.loads(m.group(1))
-            except json.JSONDecodeError:
-                pass
+            raw = m.group(1)
+            fixed = self._repair_json(raw)
+            if fixed:
+                try:
+                    obj = json.loads(fixed)
+                except json.JSONDecodeError:
+                    pass
         if obj is None:
             start, end = content.find("{"), content.rfind("}")
             if start != -1 and end > start:
-                try:
-                    obj = json.loads(content[start: end + 1])
-                except json.JSONDecodeError:
-                    pass
+                raw = content[start: end + 1]
+                fixed = self._repair_json(raw)
+                if fixed:
+                    try:
+                        obj = json.loads(fixed)
+                    except json.JSONDecodeError:
+                        pass
         if obj is not None:
             rank = obj.get("min_sufficient_rank")
             if isinstance(rank, (int, float)):
@@ -938,7 +975,7 @@ def main():
     k_values = [int(k.strip()) for k in args.k_values.split(",")]
 
     llm_config = {
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-v4-flash",
         "api_key": os.getenv("LLM_API_KEY", ""),
         "base_url": os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "4096")),
