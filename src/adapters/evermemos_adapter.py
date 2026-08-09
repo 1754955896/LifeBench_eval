@@ -660,7 +660,14 @@ class EverMemOSAdapter(BaseAdapter):
             data = resp.json()
 
             if isinstance(data, dict) and "choices" in data:
-                return data["choices"][0]["message"]["content"]
+                answer = data["choices"][0]["message"]["content"]
+                # 学习 native 版(stage4_response):只保留 FINAL ANSWER 之后的最终答案,
+                # 丢弃 CoT 推理过程,避免 answer 过长且含推理噪音
+                if "FINAL ANSWER:" in answer:
+                    parts = answer.split("FINAL ANSWER:", 1)
+                    if len(parts) > 1 and parts[1].strip():
+                        answer = parts[1].strip()
+                return answer
             return str(data)
         except Exception as exc:
             logger.error("Answer generation failed: %s", str(exc)[:200])

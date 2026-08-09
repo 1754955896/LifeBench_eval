@@ -39,6 +39,7 @@ systems/*/
 # LifeBench systems - explicitly keep these
 
 !systems/EverMemOS_bz/
+!systems/MindMemOS/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml

@@ -7,11 +7,15 @@ description: "Memos Cloud API (memtensor.cn)"
 adapter: "memos_cloud"
 
 api_url: "https://memos.memtensor.cn/api/openmem/v1"
-api_key: "${MEMOS_API_KEY}"
+api_key: "your_key"
 max_retries: 3
 retry_delay: 2.0
 timeout: 60.0
 rpm: 60
+
+# Tracker 聚合 latency 统计用的结果目录（相对项目根，如 results/lifebench-memos_cloud-omni）。
+# 留空则 tracker 跳过 latency 聚合；运行时设置 OUTPUT_DIR 环境变量即可覆盖。
+output_dir: "${OUTPUT_DIR}"
 
 llm:
   provider: "openai"

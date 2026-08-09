@@ -147,28 +147,33 @@ class MindMemOSBuilder(BaseBuilder):
             logger.error(f"Error starting Docker services: {e}")
 
     def start_api_server(self) -> Optional[subprocess.Popen]:
-        """Start MindMemOS FastAPI server."""
+        """Start MindMemOS FastAPI server.
+
+        MindMemOS manages dependencies with ``uv`` (see systems/MindMemOS/README.md),
+        so the server is started via ``uv run uvicorn`` instead of a checked-in .venv.
+        """
         logger.info("Starting MindMemOS API server...")
 
-        # Use the pre-installed .venv - check both Windows and Unix paths
-        venv_python = self.system_dir / ".venv" / "Scripts" / "python.exe"
-        if not venv_python.exists():
-            venv_python = self.system_dir / ".venv" / "bin" / "python"  # Linux fallback
-        if not venv_python.exists():
-            logger.error(f"MindMemOS .venv not found at {self.system_dir / '.venv'}")
+        # Locate uv
+        try:
+            result = subprocess.run(["uv", "--version"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                logger.error(f"uv not available: {result.stderr}")
+                return None
+        except Exception as exc:
+            logger.error(f"Failed to run uv: {exc}")
             return None
 
         # Set environment for API
         env = os.environ.copy()
         env["MINDMEMOS_CONFIG_NAME"] = self.config_name
 
-        # Start API server using the venv python
-        # On Windows, use shell=True with string command
+        # Start API server using uv run (README-recommended way)
         import platform
         is_windows = platform.system() == "Windows"
 
         if is_windows:
-            cmd = f'"{venv_python}" -m uvicorn mindmemos.api.app:app --host 127.0.0.1 --port 8000'
+            cmd = f'"uv" run uvicorn mindmemos.api.app:app --host 127.0.0.1 --port 8000'
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.system_dir),
@@ -179,7 +184,7 @@ class MindMemOSBuilder(BaseBuilder):
                 text=True,
             )
         else:
-            cmd = [str(venv_python), "-m", "uvicorn", "mindmemos.api.app:app", "--host", "127.0.0.1", "--port", "8000"]
+            cmd = ["uv", "run", "uvicorn", "mindmemos.api.app:app", "--host", "127.0.0.1", "--port", "8000"]
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.system_dir),
@@ -216,6 +221,12 @@ class MindMemOSBuilder(BaseBuilder):
     async def build(self) -> bool:
         """Build the MindMemOS environment."""
         self.setup_environment()
+
+        # Skip startup if the API server is already reachable (long-running service)
+        if self._wait_for_service(f"{self.service_url}/healthz", timeout=5):
+            logger.info("MindMemOS API already running at %s, skipping startup", self.service_url)
+            return True
+
         self.start_docker_services()
 
         # Verify Docker services are running

@@ -212,13 +212,29 @@ class EverMemOSBuilder(BaseBuilder):
             server_env = os.environ.copy()
             server_env["PYTHONIOENCODING"] = "utf-8"
             server_env["PYTHONUTF8"] = "1"
+
+            # Persist server stdout/stderr to a log file so internal processing
+            # (DB sync, LLM call gaps, etc.) can be inspected when diagnosing slowness.
+            # Written into the run's output dir (config["output_dir"]), falling
+            # back to results/ for backward compatibility.
+            server_log_dir = self.config.get("output_dir")
+            server_log = (
+                Path(server_log_dir) / "evermemos_server.log"
+                if server_log_dir
+                else project_root / "results" / "evermemos_server.log"
+            )
+            server_log.parent.mkdir(parents=True, exist_ok=True)
+            server_log_handle = open(server_log, "a", encoding="utf-8", errors="replace")
+            self._server_log_handle = server_log_handle
+
             self._api_process = subprocess.Popen(
                 [str(venv_python), str(run_py), "--port", "8001", "--env-file", str(env_file_path)],
                 cwd=str(evermemos_src),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=server_log_handle,
+                stderr=subprocess.STDOUT,
                 env=server_env,
             )
+            logger.info("API server logs: %s", server_log)
 
             logger.info("API server process started (pid=%d)", self._api_process.pid)
             return True

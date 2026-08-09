@@ -6,9 +6,10 @@ API Reference:
 - Auth: Token authorization header
 
 Modified to follow OmniMemEval approach:
-- add_chunks: split messages by speaker into per-speaker user_ids,
-  assign roles from each speaker's perspective (own=user, other=assistant)
-- search: query each speaker's user_id separately, merge results by score
+- add_chunks: only the human speaker's perspective is stored — speaker_b
+  is always the assistant ("{speaker_a}的Assistant"), so a single user_id
+  per conversation suffices; assistant messages get role=assistant
+- search: query the human speaker's user_id only
 - answer: updated prompt instruction 8 to match Omni's LOCOMO_ANSWER_PROMPT
 """
 
@@ -157,15 +158,27 @@ class MemosCloudAdapter(BaseAdapter):
             logger.info("Sanitized user_id: %s -> %s", user_id, safe_id)
             return safe_id
 
-    def _register_speakers(self, conv_id: str, speaker_names: List[str]) -> None:
-        """Register all speaker names for a conversation.
+    @staticmethod
+    def _is_assistant(name: str) -> bool:
+        """True if the speaker name marks an assistant (e.g. "于晓薇的Assistant")."""
+        lowered = name.lower()
+        return "assistant" in lowered or lowered in ("ai", "bot")
 
-        Creates per-speaker user_ids: {conv_id}_speaker_{name}
+    def _human_speakers(self, speaker_names: List[str]) -> List[str]:
+        """Filter out assistant speakers, keeping only the human(s)."""
+        humans = [n for n in speaker_names if not self._is_assistant(n)]
+        # Fallback: if everything looks like an assistant, keep the first speaker
+        return humans or speaker_names[:1]
+
+    def _register_speakers(self, conv_id: str, speaker_names: List[str]) -> None:
+        """Register human speaker names for a conversation.
+
+        Creates per-human user_ids: {conv_id}_speaker_{name}
         """
         if conv_id not in self._speaker_map:
             self._speaker_map[conv_id] = []
         existing_names = {e["speaker_name"] for e in self._speaker_map[conv_id]}
-        for name in speaker_names:
+        for name in self._human_speakers(speaker_names):
             if name not in existing_names:
                 user_id = f"{conv_id}_speaker_{name}"
                 self._speaker_map[conv_id].append({
@@ -209,16 +222,18 @@ class MemosCloudAdapter(BaseAdapter):
                 msg.speaker_name for msg in chunk.messages
             ))
 
-            # Register all speakers for future multi-speaker search
+            # Only the human's perspective is stored — speaker_b is always
+            # the assistant ("{speaker_a}的Assistant"), so one user_id per
+            # conversation suffices and the chunk is sent exactly once.
             self._register_speakers(conv_id, speaker_names)
+            human_names = self._human_speakers(speaker_names)
 
-            # For each speaker, build a full message list with roles from their perspective
-            for speaker_name in speaker_names:
+            for speaker_name in human_names:
                 speaker_user_id = f"{conv_id}_speaker_{speaker_name}"
 
                 formatted_messages = []
                 for msg in chunk.messages:
-                    # OmniMemEval: own words -> user, other's words -> assistant
+                    # Own words -> user, everyone else's (assistant) -> assistant
                     role = "user" if msg.speaker_name == speaker_name else "assistant"
                     formatted_messages.append({
                         "role": role,
@@ -316,8 +331,8 @@ class MemosCloudAdapter(BaseAdapter):
     ) -> SearchResult:
         """Search memories via Memos Cloud API.
 
-        OmniMemEval approach: search each known speaker's user_id separately,
-        then merge and sort results so both speakers' memories are considered.
+        Searches the registered human speaker's user_id (speaker_b is the
+        assistant and is not stored separately).
 
         Falls back to single-user search when no speakers are registered for
         this conversation.

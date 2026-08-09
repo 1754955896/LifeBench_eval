@@ -11,18 +11,13 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import aiohttp
+
 from src.adapters.base import BaseAdapter, ChunkedMessage
 from src.adapters.registry import register_adapter
 from src.models.search import RetrievedMemory, SearchResult
 
 logger = logging.getLogger(__name__)
-
-# Try to import litellm for LLM calls
-try:
-    import litellm
-    HAS_LITELLM = True
-except ImportError:
-    HAS_LITELLM = False
 
 # LoCoMo grounding rules for answer generation (same as mindmemos_eval)
 LOCOMO_ANSWER_GROUNDING_RULES = """# LoCoMo memory grounding rules
@@ -261,6 +256,23 @@ def _format_memory_for_answering(hit: "MemorySearchHit") -> str:
     )
 
 
+def _format_retrieved_for_answering(memory: "RetrievedMemory") -> str:
+    """Format a RetrievedMemory for answer generation.
+
+    Works for both live SDK-backed hits and disk-deserialized results
+    (metadata survives serialization; the raw SDK object does not).
+    """
+    metadata = memory.metadata or {}
+    event_time = metadata.get("event_time")
+    source_timestamp = metadata.get("source_timestamp")
+    if not event_time and not source_timestamp:
+        return memory.content
+    return (
+        f"[event_time: {event_time or 'unknown time'}; "
+        f"source_timestamp: {source_timestamp or 'unknown time'}] {memory.content}"
+    )
+
+
 def _extract_answer(full_response: str) -> tuple[str, str]:
     """Extract the answer and chain-of-thought from model output (verbatim port from env.py)."""
     answer = full_response
@@ -326,7 +338,6 @@ class MindMemOSAdapter(BaseAdapter):
         logger.info(f"  Search Strategy: {self.search_strategy}")
         logger.info(f"  Rerank: {self.rerank}")
         logger.info(f"  Using SDK: {HAS_SDK}")
-        logger.info(f"  Using litellm: {HAS_LITELLM}")
         logger.info(f"  LLM: {self.llm_provider}/{self.llm_model}")
 
     async def _get_client(self) -> "AsyncMemoryClient":
@@ -365,6 +376,7 @@ class MindMemOSAdapter(BaseAdapter):
 
         total_added = 0
         total_memories = 0
+        server_responses = []
 
         for chunk in chunks:
             messages = []
@@ -420,6 +432,9 @@ class MindMemOSAdapter(BaseAdapter):
                 total_added += 1
                 if result.memories:
                     total_memories += len(result.memories)
+                # model_dump() turns the pydantic AddResult into a JSON-safe dict
+                # so the pipeline can persist it to add_latency.json via default=str
+                server_responses.append(result.model_dump())
 
             except Exception as e:
                 logger.error(f"Error adding chunk {chunk.conversation_id}: {e}")
@@ -435,6 +450,7 @@ class MindMemOSAdapter(BaseAdapter):
             "added": total_added,
             "memories": total_memories,
             "total_memories": self._total_memories_added,
+            "server_responses": server_responses,
         }
 
     async def search(
@@ -525,22 +541,24 @@ class MindMemOSAdapter(BaseAdapter):
         Generate answer using LLM given query and retrieved context.
         Uses env.py's _format_memory_for_answering and build_answer_prompt
         with raw MemorySearchHit objects for exact LoCoMo behavior.
+        Calls the OpenAI-compatible chat endpoint directly (aiohttp), same as
+        the mem0/memu adapters — the LLM config (base_url/api_key/model) comes
+        from the system config's ``llm`` section (env-backed).
         """
-        if not HAS_LITELLM:
-            logger.warning("litellm not available, returning context as answer")
-            return context
-
         if not self.llm_api_key:
             logger.error("No LLM API key configured for answer generation")
             return "Error: No LLM API key configured"
 
         search_result = kwargs.get("search_result")
 
-        # Use raw MemorySearchHit with _format_memory_for_answering (exact env.py behavior)
+        # Format from RetrievedMemory metadata (works for live and disk-loaded results;
+        # the raw SDK hit embedded at search time is lost after JSON serialization)
         if search_result and hasattr(search_result, 'results'):
-            raw_hits = [r.metadata.get("raw") for r in search_result.results]
-            raw_hits = [h for h in raw_hits if h is not None]
-            formatted_memories = [_format_memory_for_answering(hit) for hit in raw_hits]
+            formatted_memories = [
+                _format_retrieved_for_answering(memory)
+                for memory in search_result.results
+                if memory is not None
+            ]
             answer_template = self.config.get("answer_template", None)
             prompt = build_answer_prompt(formatted_memories, query, answer_template)
         else:
@@ -551,21 +569,47 @@ class MindMemOSAdapter(BaseAdapter):
                 question=query,
             )
 
-        try:
-            response = await litellm.acompletion(
-                model=f"{self.llm_provider}/{self.llm_model}",
-                messages=[{"role": "user", "content": prompt}],
-                api_key=self.llm_api_key,
-                base_url=self.llm_base_url if self.llm_base_url else None,
-                temperature=self.llm_temperature,
-                max_tokens=self.llm_max_tokens,
-            )
-            full_response = response["choices"][0]["message"]["content"]
-            answer_text, _ = _extract_answer(full_response)
-            return answer_text if answer_text else full_response
-        except Exception as e:
-            logger.error(f"LLM answer error: {e}")
-            return f"Error: {str(e)}"
+        url = f"{self.llm_base_url}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.llm_api_key}",
+        }
+        payload = {
+            "model": self.llm_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.llm_temperature,
+            "max_tokens": self.llm_max_tokens,
+        }
+
+        answer_retries = int(self.config.get("answer", {}).get("max_retries", 3))
+        for attempt in range(answer_retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload, headers=headers) as resp:
+                        if resp.status >= 500:
+                            raise aiohttp.ClientResponseError(
+                                resp.request_info, resp.history, status=resp.status
+                            )
+                        resp.raise_for_status()
+                        data = await resp.json()
+
+                if isinstance(data, dict) and "choices" in data:
+                    full_response = data["choices"][0]["message"]["content"]
+                    answer_text, _ = _extract_answer(full_response)
+                    return answer_text if answer_text else full_response
+                return str(data)
+            except Exception as exc:
+                logger.warning(
+                    "ANSWER attempt %d/%d failed: %s",
+                    attempt + 1, answer_retries, str(exc)[:200],
+                )
+                if attempt < answer_retries - 1:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                else:
+                    logger.error("Answer generation failed: %s", str(exc)[:200])
+                    return f"Error generating answer: {str(exc)[:100]}"
+
+        return "Error generating answer"
 
     def get_system_info(self) -> Dict[str, Any]:
         """Return system info."""

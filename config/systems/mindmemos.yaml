@@ -11,6 +11,8 @@ builder: "mindmemos"
 api_base_url: "${MINDMEMOS_API_BASE_URL:http://127.0.0.1:8000}"
 api_key: "${MINDMEMOS_API_KEY:dev-api-key-001}"
 api_key_002: "${MINDMEMOS_API_KEY_002:dev-api-key-002}"
+# Schema 算法每个会话要跑多轮 LLM（实体建模+抽取），单次 add 实测 ~160s，放宽 SDK 超时
+timeout: 600
 
 # Memory algorithm: vanilla or schema
 memory_algorithm: "${MINDMEMOS_MEMORY_ALGORITHM:vanilla}"
@@ -19,6 +21,10 @@ memory_algorithm: "${MINDMEMOS_MEMORY_ALGORITHM:vanilla}"
 search_top_k: 40
 search_strategy: "agentic"
 rerank: true
+
+# Tracker 聚合 latency 统计用的结果目录（相对项目根，如 results/smoke-mindmemos）。
+# 留空则 tracker 跳过 latency 聚合；运行时设置 OUTPUT_DIR 环境变量即可覆盖。
+output_dir: "${OUTPUT_DIR}"
 
 # LLM configuration (for answer generation)
 llm:
@@ -51,7 +57,9 @@ rerank:
   max_concurrent: 5
 
 add:
-  num_workers: 2
+  # runner 用它作为样本级并发上限（sample semaphore）：10 = 10 个样本全并行。
+  # 样本内 add 实际是逐日期串行的，此值不会放大单样本请求量。
+  num_workers: 10
   enable_semantic_extraction: true
   enable_clustering: true
   enable_profile_extraction: true
