@@ -18,13 +18,18 @@ neo4j_uri: "bolt://localhost:7687"
 neo4j_user: "neo4j"
 neo4j_password: "password"
 
+# LLM Proxy for token tracking (optional).
+# When set, all LLM chat-completion traffic is routed through the proxy
+# so token usage can be counted. Embedding and rerank traffic bypass the proxy.
+# llm_proxy_url: "http://localhost:18443/v1"  # disabled — proxy can't handle high concurrency
+
 # LLM settings for fact extraction and answer generation
 llm:
   model: "${LLM_MODEL:deepseek-v4-flash}"
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com/v1}"
   temperature: 0
-  max_tokens: 32768
+  max_tokens: 65536
 
 # Embedder settings — reads VECTORIZE_* env vars directly in adapter
 embedder:
@@ -42,6 +47,28 @@ rerank:
   base_url: "${RERANK_BASE_URL}"
   model: "${RERANK_MODEL}"
 
+# Concurrency: max simultaneous coroutines during ingestion and search.
+# Overrides the SEMAPHORE_LIMIT env var (default 20). Edge dedup is the
+# primary bottleneck (1 LLM call per edge), so higher concurrency directly
+# reduces wall-clock time. 15 gives good throughput for typical API limits.
+max_coroutines: 20
+
+# Batch size: how many messages to concatenate into one add_episode() call.
+# Larger batches = fewer episodes = fewer extraction calls = fewer redundant
+# edges (LLM sees full context). Set high enough to fit a whole session in
+# 1 episode, capped for very long sessions.
+batch_size: 15
+
 # Search settings
 search:
   top_k: 40
+  num_workers: 5
+
+# Runner-level parallelism
+#   add.num_workers: max concurrent samples during ADD phase
+#   search.num_workers: max concurrent search queries per sample
+#   sample_parallel: whether different samples run concurrently
+add:
+  num_workers: 5
+
+sample_parallel: true

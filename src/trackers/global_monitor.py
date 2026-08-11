@@ -29,6 +29,8 @@ class TimelineEntry:
     storage_mb: float = 0.0
     memory_rss_mb: float = 0.0
     cpu_percent: float = 0.0
+    container_memory_rss_mb: float = 0.0
+    container_cpu_percent: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -38,6 +40,8 @@ class TimelineEntry:
             "storage_mb": round(self.storage_mb, 3),
             "memory_rss_mb": round(self.memory_rss_mb, 2),
             "cpu_percent": round(self.cpu_percent, 2),
+            "container_memory_rss_mb": round(self.container_memory_rss_mb, 2),
+            "container_cpu_percent": round(self.container_cpu_percent, 2),
             "extra": self.extra,
         }
         if self.entry_type != "sample":
@@ -119,6 +123,8 @@ class GlobalMonitor:
                     storage_mb=s.get("storage_mb", 0.0),
                     memory_rss_mb=s.get("memory_rss_mb", 0.0),
                     cpu_percent=s.get("cpu_percent", 0.0),
+                    container_memory_rss_mb=s.get("container_memory_rss_mb", 0.0),
+                    container_cpu_percent=s.get("container_cpu_percent", 0.0),
                     extra=s.get("extra", {}),
                 ))
             duration = data.get("summary", {}).get("duration_seconds", 0.0)
@@ -166,6 +172,8 @@ class GlobalMonitor:
                     storage_mb=snap.storage_mb,
                     memory_rss_mb=snap.memory_rss_mb,
                     cpu_percent=snap.cpu_percent,
+                    container_memory_rss_mb=snap.container_memory_rss_mb,
+                    container_cpu_percent=snap.container_cpu_percent,
                     extra=snap.extra,
                 )
 
@@ -260,6 +268,18 @@ class GlobalMonitor:
         memory_values = [e.memory_rss_mb for e in sample_entries]
         storage_values = [e.storage_mb for e in sample_entries]
         cpu_values = [e.cpu_percent for e in sample_entries]
+
+        if not memory_values:
+            return {
+                "total_samples": len(self._timeline),
+                "duration_seconds": 0,
+                "peak_memory_mb": 0,
+                "avg_memory_mb": 0,
+                "peak_cpu_percent": 0,
+                "avg_cpu_percent": 0,
+                "final_storage_mb": 0,
+                "storage_delta_mb": 0,
+            }
 
         return {
             "total_samples": len(self._timeline),

@@ -111,9 +111,9 @@ def main():
     with open(locomo_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # Convert first two samples
+    # Convert all samples
     converted_samples = []
-    for sample_idx in range(2):  # First two samples
+    for sample_idx in range(len(data)):
         sample = data[sample_idx]
         sample_id = sample.get("sample_id", f"sample-{sample_idx}")
 
@@ -137,12 +137,22 @@ def main():
         }
         converted_samples.append(converted_sample)
 
-    # Write to smoke file
-    smoke_path = Path(__file__).parent / "locomo_smoke.json"
-    with open(smoke_path, "w", encoding="utf-8") as f:
+    # Backup original locomo10.json before overwriting
+    locomo_path_new = Path(__file__).parent / ".." / "locomo" / "locomo10.json"
+    locomo_raw_path = Path(__file__).parent / ".." / "locomo" / "locomo10_raw.json"
+
+    # Copy original to _raw backup
+    with open(locomo_path_new, "r", encoding="utf-8") as f:
+        original_data = f.read()
+    with open(locomo_raw_path, "w", encoding="utf-8") as f:
+        f.write(original_data)
+    print(f"Saved original backup to {locomo_raw_path}")
+
+    # Overwrite locomo10.json with converted data
+    with open(locomo_path_new, "w", encoding="utf-8") as f:
         json.dump(converted_samples, f, indent=2, ensure_ascii=False)
 
-    print(f"Converted {len(converted_samples)} samples with {sum(len(s['qa']) for s in converted_samples)} total QAs to {smoke_path}")
+    print(f"Converted {len(converted_samples)} samples with {sum(len(s['qa']) for s in converted_samples)} total QAs to {locomo_path_new}")
 
 if __name__ == "__main__":
     main()

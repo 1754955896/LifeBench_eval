@@ -5,12 +5,22 @@ Runs multiple passes until all failures are resolved or max passes reached.
 Usage: python fix_judge.py [--max-passes N] [--concurrency N]
 """
 import argparse
+import os
+import sys
+
+# Remove script directory from sys.path to avoid shadowing stdlib modules
+# (same directory contains logging.py, config.py, plot_tracker.py, etc.)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_abs_paths = [os.path.abspath(p) for p in sys.path]
+_indices = [i for i, p in enumerate(_abs_paths) if p == os.path.abspath(_script_dir)]
+for i in reversed(_indices):
+    sys.path.pop(i)
+
 import asyncio
 import json
-import os
 import re
 import shutil
-import sys
+
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -18,7 +28,7 @@ from typing import Dict, List, Optional
 # ---------------------------------------------------------------------------
 # Load .env
 # ---------------------------------------------------------------------------
-_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
 if os.path.exists(_ENV_PATH):
     with open(_ENV_PATH, "r", encoding="utf-8") as _f:
         for _line in _f:
@@ -353,10 +363,15 @@ async def main():
                         help="Maximum re-judge passes (default: 5)")
     parser.add_argument("--concurrency", type=int, default=5,
                         help="Concurrent API calls (default: 5)")
+    parser.add_argument("--results-dir", type=str, default=None,
+                        help="Results directory containing eval_results.json and answer_results.json")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    results_dir = os.path.join(script_dir, "results", "lifebench-cognee")
+    if args.results_dir:
+        results_dir = os.path.abspath(args.results_dir)
+    else:
+        results_dir = os.path.join(script_dir, "results", "lifebench-cognee")
     eval_path = os.path.join(results_dir, "eval_results.json")
     answer_path = os.path.join(results_dir, "answer_results.json")
 

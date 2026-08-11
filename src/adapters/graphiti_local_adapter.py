@@ -68,11 +68,31 @@ class GraphitiLocalAdapter(BaseAdapter):
         # Search defaults
         self.top_k = config.get("search", {}).get("top_k", 10)
 
+        # Batch size for add_episode_bulk (default 10)
+        self.batch_size = max(1, int(config.get("batch_size", 10)))
+
+        # LLM proxy URL — when set, LLM chat traffic is routed via proxy
+        self.llm_proxy_url = config.get("llm_proxy_url", "").strip()
+
+        # Max concurrent coroutines for graphiti operations (overrides SEMAPHORE_LIMIT)
+        self.max_coroutines = config.get("max_coroutines", None)
+        if self.max_coroutines is not None:
+            self.max_coroutines = max(1, int(self.max_coroutines))
+
         # Per-conversation reference date for answer() temporal grounding
         self._conversation_reference_date: Dict[str, str] = {}
 
-        # Lazy init
-        self._graphiti = None
+        # Lazy init — one Graphiti instance per group_id to avoid race conditions
+        # when multiple samples run concurrently and share the same adapter.
+        self._graphiti_by_group: Dict[str, Any] = {}
+        self._graphiti_init_lock = asyncio.Lock()
+
+        # Shared Neo4j driver — each Graphiti instance would otherwise create its
+        # own driver with its own connection pool, overwhelming Neo4j when many
+        # samples run concurrently. A single shared driver with one pool is safe
+        # because Graphiti.clone() is a no-op (returns self).
+        self._shared_driver: Any = None
+        self._shared_driver_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # LLM / Embedder / Reranker helpers (independently configurable)
@@ -83,7 +103,12 @@ class GraphitiLocalAdapter(BaseAdapter):
 
         Uses OpenAIGenericClient (json_object mode) for non-OpenAI providers
         (e.g. DeepSeek) that do not support the responses.parse API.
+
+        Explicitly sets longer httpx timeouts (connect=60s, read=600s) so
+        concurrent LLM calls don't fail with "Request timed out" under load.
         """
+        import httpx
+        from openai import AsyncOpenAI
         from graphiti_core.llm_client.config import LLMConfig
         from graphiti_core.llm_client.openai_client import OpenAIClient
         from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
@@ -92,12 +117,30 @@ class GraphitiLocalAdapter(BaseAdapter):
         base_url = self._resolve_base_url("LLM")
         model = self.llm_config.get("model", os.environ.get("LLM_MODEL", "deepseek-chat"))
 
+        # Route LLM traffic through proxy for token tracking when configured
+        if self.llm_proxy_url:
+            logger.info("LLM client routed through proxy: %s", self.llm_proxy_url)
+            base_url = self.llm_proxy_url
+
         llm_cfg = LLMConfig(api_key=api_key, base_url=base_url, model=model, temperature=0)
 
-        if "openai.com" in base_url:
-            return OpenAIClient(config=llm_cfg)
+        # Custom httpx client with generous timeouts for high-concurrency scenarios.
+        # Default connect=5s is too short when 100+ concurrent connections open.
+        _timeout = httpx.Timeout(connect=60.0, read=600.0, write=600.0, pool=600.0)
+        _http_client = httpx.AsyncClient(timeout=_timeout)
 
-        return OpenAIGenericClient(config=llm_cfg, structured_output_mode="json_object")
+        if "openai.com" in base_url:
+            async_client = AsyncOpenAI(
+                api_key=api_key, base_url=base_url, http_client=_http_client,
+            )
+            return OpenAIClient(config=llm_cfg, client=async_client)
+
+        async_client = AsyncOpenAI(
+            api_key=api_key, base_url=base_url, http_client=_http_client,
+        )
+        return OpenAIGenericClient(
+            config=llm_cfg, client=async_client, structured_output_mode="json_object",
+        )
 
     def _get_embedder_client(self):
         """Create an embedder client from YAML config with env fallbacks."""
@@ -280,34 +323,65 @@ class GraphitiLocalAdapter(BaseAdapter):
     # Lazy Graphiti client
     # ------------------------------------------------------------------
 
-    async def _get_graphiti(self):
-        """Get or create the Graphiti client (lazy init).
+    async def _get_shared_driver(self):
+        """Create or return the single shared Neo4j driver.
 
-        LLM, embedder, and cross-encoder are each independently configurable
-        via their respective env vars (LLM_*, VECTORIZE_*, RERANK_*).
+        All Graphiti instances share one connection pool to avoid overwhelming
+        Neo4j when many samples run concurrently.
         """
-        if self._graphiti is None:
-            from graphiti_core.graphiti import Graphiti
+        if self._shared_driver is None:
+            async with self._shared_driver_lock:
+                if self._shared_driver is None:
+                    from graphiti_core.driver.neo4j_driver import Neo4jDriver
 
-            llm_client = self._get_llm_client()
-            embedder = self._get_embedder_client()
-            cross_encoder = self._get_cross_encoder()
+                    self._shared_driver = Neo4jDriver(
+                        self.neo4j_uri, self.neo4j_user, self.neo4j_password,
+                    )
+        return self._shared_driver
 
-            self._graphiti = Graphiti(
-                uri=self.neo4j_uri,
-                user=self.neo4j_user,
-                password=self.neo4j_password,
-                llm_client=llm_client,
-                embedder=embedder,
-                cross_encoder=cross_encoder,
-            )
+    async def _get_graphiti(self, group_id: str):
+        """Get or create a Graphiti client for *group_id* (lazy, one per group).
 
-        return self._graphiti
+        When multiple samples run concurrently, each conversation maps to a
+        different group_id.  Sharing a single Graphiti instance would cause a
+        race condition because add_episode() mutates self.driver based on
+        group_id.  We create one instance per group so each has its own driver
+        permanently set to the right database.
+
+        All instances share a single Neo4j driver via graph_driver= to keep
+        one connection pool instead of one per instance.
+        """
+        if group_id not in self._graphiti_by_group:
+            async with self._graphiti_init_lock:
+                if group_id not in self._graphiti_by_group:
+                    from graphiti_core.graphiti import Graphiti
+
+                    llm_client = self._get_llm_client()
+                    embedder = self._get_embedder_client()
+                    cross_encoder = self._get_cross_encoder()
+                    shared_driver = await self._get_shared_driver()
+
+                    graphiti = Graphiti(
+                        uri=self.neo4j_uri,
+                        user=self.neo4j_user,
+                        password=self.neo4j_password,
+                        llm_client=llm_client,
+                        embedder=embedder,
+                        cross_encoder=cross_encoder,
+                        max_coroutines=self.max_coroutines,
+                        graph_driver=shared_driver,
+                    )
+                    self._graphiti_by_group[group_id] = graphiti
+
+        return self._graphiti_by_group[group_id]
 
     async def close(self) -> None:
-        if self._graphiti:
-            await self._graphiti.close()
-            self._graphiti = None
+        for graphiti in self._graphiti_by_group.values():
+            await graphiti.close()
+        self._graphiti_by_group.clear()
+        if self._shared_driver is not None:
+            await self._shared_driver.close()
+            self._shared_driver = None
 
     # ------------------------------------------------------------------
     # Ingest (mirrors eval_e2e_graph_building.build_subgraph)
@@ -318,67 +392,105 @@ class GraphitiLocalAdapter(BaseAdapter):
     ) -> Dict[str, Any]:
         """Ingest messages following the Graphiti LongMemEval eval pattern.
 
-        Each message becomes one add_episode() call:
-          episode_body = '{speaker}: {content}'
-          source = EpisodeType.message
-          group_id = MD5(conversation_id)
+        Messages are grouped into batches (batch_size) and each batch is
+        concatenated into a single episode. This gives the LLM extractor
+        enough context to avoid redundant edges while keeping prompt sizes
+        bounded.
         """
         from graphiti_core.nodes import EpisodeType
 
-        graphiti = await self._get_graphiti()
-
         total_added = 0
         total_failed = 0
+        per_episode_metadata: list[dict] = []
         latest_ref_date: Dict[str, str] = {}
+
+        # Pre-compute group_id from the first chunk (all belong to same conversation)
+        group_id = ""
+        for chunk in chunks:
+            if chunk.messages:
+                group_id = _safe_group_id(chunk.conversation_id)
+                break
+
+        if not group_id:
+            return {
+                "type": "graphiti_local",
+                "total_chunks": len(chunks),
+                "added": 0,
+                "failed": 0,
+                "metadata": [],
+            }
+
+        graphiti = await self._get_graphiti(group_id)
 
         for chunk in chunks:
             if not chunk.messages:
                 continue
 
-            group_id = _safe_group_id(chunk.conversation_id)
-            logger.info(
-                "ADD: conversation=%s group=%s messages=%d",
-                chunk.conversation_id, group_id, len(chunk.messages),
-            )
-
+            # Collect valid messages (filter empty content, append image metadata)
+            valid_msgs: list[tuple[Any, str, str, Any]] = []  # (msg, speaker, content, ts)
             for msg in chunk.messages:
-                # Build episode_body mirroring the eval script's
-                #   f'{msg["role"]}: {msg["content"]}'
-                # Our data uses speaker_name instead of role, and may carry
-                # image metadata (blip_caption / query) that should be
-                # included in the episode text so the LLM can extract them.
                 speaker = getattr(msg, "speaker_name", "") or "unknown"
                 content = (getattr(msg, "content", "") or "").strip()
                 content = self._append_image_metadata(msg, content)
                 if not content:
                     continue
-                episode_body = f"{speaker}: {content}"
-
-                # Resolve reference_time (handles ISO-8601 str, unix int, datetime)
-                reference_time = self._resolve_timestamp(
-                    getattr(msg, "timestamp", None),
-                    chunk.timestamp,
+                ts = self._resolve_timestamp(
+                    getattr(msg, "timestamp", None), chunk.timestamp,
                 )
+                valid_msgs.append((msg, speaker, content, ts))
 
-                # Track latest session date for answer() temporal grounding
-                self._track_ref_date(chunk, latest_ref_date)
+            if not valid_msgs:
+                continue
 
-                try:
-                    await graphiti.add_episode(
-                        name="",
-                        episode_body=episode_body,
-                        reference_time=reference_time,
-                        source=EpisodeType.message,
-                        source_description=f"conversation {chunk.conversation_id}",
-                        group_id=group_id,
-                    )
-                    total_added += 1
-                except Exception as exc:
-                    logger.warning(
-                        "ADD episode failed: %s",
-                        str(exc)[:200],
-                    )
-                    total_failed += 1
+            # Track latest session date for answer() temporal grounding
+            self._track_ref_date(chunk, latest_ref_date)
+
+            logger.info(
+                "ADD: conversation=%s group=%s messages=%d batch_size=%d",
+                chunk.conversation_id, group_id, len(valid_msgs), self.batch_size,
+            )
+
+            # Process in batches: each batch → one concatenated episode
+            for batch_start in range(0, len(valid_msgs), self.batch_size):
+                batch_msgs = valid_msgs[batch_start:batch_start + self.batch_size]
+                lines = [f"{speaker}: {content}" for _, speaker, content, _ in batch_msgs]
+                episode_body = "\n".join(lines)
+                reference_time = batch_msgs[0][3]  # timestamp of first msg in batch
+
+                for attempt in range(1, 4):
+                    try:
+                        result = await graphiti.add_episode(
+                            name="",
+                            episode_body=episode_body,
+                            reference_time=reference_time,
+                            source=EpisodeType.message,
+                            source_description=f"conversation {chunk.conversation_id}",
+                            group_id=group_id,
+                        )
+                        total_added += len(batch_msgs)
+                        per_episode_metadata.append({
+                            "batch_size": len(batch_msgs),
+                            "nodes_extracted": len(result.nodes),
+                            "edges_extracted": len(result.edges),
+                            "episode_uuid": result.episode.uuid,
+                            "reference_time": reference_time.isoformat(),
+                        })
+                        break
+                    except Exception as exc:
+                        delay = 5 * attempt
+                        if attempt < 3:
+                            logger.warning(
+                                "ADD batch failed (conversation=%s, size=%d, attempt=%d/3): %s — retrying in %ds",
+                                chunk.conversation_id, len(batch_msgs), attempt,
+                                str(exc)[:150], delay,
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.warning(
+                                "ADD batch failed (conversation=%s, size=%d): %s",
+                                chunk.conversation_id, len(batch_msgs), str(exc)[:200],
+                            )
+                            total_failed += len(batch_msgs)
 
         self._conversation_reference_date.update(latest_ref_date)
 
@@ -387,6 +499,7 @@ class GraphitiLocalAdapter(BaseAdapter):
             "total_chunks": len(chunks),
             "added": total_added,
             "failed": total_failed,
+            "metadata": per_episode_metadata,
         }
 
     # ------------------------------------------------------------------
@@ -404,19 +517,50 @@ class GraphitiLocalAdapter(BaseAdapter):
         """
         top_k = kwargs.get("top_k", self.top_k)
 
-        graphiti = await self._get_graphiti()
         group_id = _safe_group_id(conversation_id)
+        graphiti = await self._get_graphiti(group_id)
 
         logger.info("SEARCH: query=%.50s... group=%s top_k=%d", query, group_id, top_k)
 
         try:
-            from graphiti_core.search.search_config_recipes import (
-                COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            from graphiti_core.search.search_config import (
+                CommunityReranker,
+                CommunitySearchConfig,
+                CommunitySearchMethod,
+                EdgeReranker,
+                EdgeSearchConfig,
+                EdgeSearchMethod,
+                EpisodeReranker,
+                EpisodeSearchConfig,
+                EpisodeSearchMethod,
+                NodeReranker,
+                NodeSearchConfig,
+                NodeSearchMethod,
+                SearchConfig,
             )
 
-            config = COMBINED_HYBRID_SEARCH_CROSS_ENCODER
-            # Ask each layer for more candidates so the merged top_k is diverse
-            config.limit = max(top_k, 20)
+            # Build a fresh config per call — never mutate the global singleton.
+            # RRF (Reciprocal Rank Fusion) is pure math, zero LLM cost for reranking.
+            limit = max(top_k, 30)
+            config = SearchConfig(
+                edge_config=EdgeSearchConfig(
+                    search_methods=[EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity],
+                    reranker=EdgeReranker.rrf,
+                ),
+                node_config=NodeSearchConfig(
+                    search_methods=[NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity],
+                    reranker=NodeReranker.rrf,
+                ),
+                episode_config=EpisodeSearchConfig(
+                    search_methods=[EpisodeSearchMethod.bm25],
+                    reranker=EpisodeReranker.rrf,
+                ),
+                community_config=CommunitySearchConfig(
+                    search_methods=[CommunitySearchMethod.bm25, CommunitySearchMethod.cosine_similarity],
+                    reranker=CommunityReranker.rrf,
+                ),
+                limit=limit,
+            )
             result = await graphiti.search_(
                 query=query,
                 config=config,
@@ -539,6 +683,10 @@ class GraphitiLocalAdapter(BaseAdapter):
         if not api_key:
             logger.error("No LLM API key configured for answer generation")
             return "Error: No LLM API key configured"
+
+        # Route through proxy when configured
+        if self.llm_proxy_url:
+            base_url = self.llm_proxy_url
 
         if not base_url.endswith("/v1"):
             base_url = base_url.rstrip("/") + "/v1"

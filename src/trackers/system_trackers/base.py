@@ -40,6 +40,8 @@ class SystemSnapshot:
     storage_mb: float = 0.0
     memory_rss_mb: float = 0.0
     cpu_percent: float = 0.0
+    container_memory_rss_mb: float = 0.0
+    container_cpu_percent: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -47,6 +49,8 @@ class SystemSnapshot:
             "storage_mb": round(self.storage_mb, 3),
             "memory_rss_mb": round(self.memory_rss_mb, 2),
             "cpu_percent": round(self.cpu_percent, 2),
+            "container_memory_rss_mb": round(self.container_memory_rss_mb, 2),
+            "container_cpu_percent": round(self.container_cpu_percent, 2),
             "extra": self.extra,
         }
 

@@ -70,6 +70,29 @@ class Mem0Tracker(DefaultTracker):
 
     # -- container stats ----------------------------------------------------
 
+    @staticmethod
+    def _parse_mem_usage_mb(mem_usage: str) -> float:
+        """Parse docker mem_usage like '271.8MiB / 7.69GiB' to MB."""
+        if not mem_usage:
+            return 0.0
+        part = mem_usage.split("/")[0].strip()
+        try:
+            if part.endswith("GiB"):
+                return float(part[:-3].strip()) * 1024
+            elif part.endswith("MiB"):
+                return float(part[:-3].strip())
+            elif part.endswith("KiB"):
+                return float(part[:-3].strip()) / 1024
+            elif part.endswith("GB"):
+                return float(part[:-2].strip()) * 1000
+            elif part.endswith("MB"):
+                return float(part[:-2].strip())
+            elif part.endswith("kB"):
+                return float(part[:-2].strip()) / 1000
+        except ValueError:
+            pass
+        return 0.0
+
     def _get_container_stats(self) -> Dict[str, Any]:
         """Get CPU/memory/IO for each mem0-related docker container.
 
@@ -115,10 +138,12 @@ class Mem0Tracker(DefaultTracker):
                     name = parts[0]
                     cpu = parts[1].rstrip("%")
                     mem_perc = parts[3].rstrip("%")
+                    mem_usage_str = parts[2]
                     stats[name] = {
                         "container": name,
                         "cpu_percent": float(cpu) if cpu else 0.0,
-                        "mem_usage": parts[2],
+                        "mem_usage": mem_usage_str,
+                        "mem_usage_mb": round(self._parse_mem_usage_mb(mem_usage_str), 2),
                         "mem_percent": float(mem_perc) if mem_perc else 0.0,
                         "net_io": parts[4],
                         "block_io": parts[5],
@@ -209,14 +234,19 @@ class Mem0Tracker(DefaultTracker):
         if container_stats:
             snapshot.extra["containers"] = container_stats
 
-            total_mem = sum(
+            total_mem_percent = sum(
                 c.get("mem_percent", 0.0) for c in container_stats.values()
             )
             total_cpu = sum(
                 c.get("cpu_percent", 0.0) for c in container_stats.values()
             )
-            snapshot.extra["total_container_mem_percent"] = round(total_mem, 2)
+            total_mem_mb = sum(
+                c.get("mem_usage_mb", 0.0) for c in container_stats.values()
+            )
+            snapshot.extra["total_container_mem_percent"] = round(total_mem_percent, 2)
             snapshot.extra["total_container_cpu_percent"] = round(total_cpu, 2)
+            snapshot.container_memory_rss_mb = round(total_mem_mb, 2)
+            snapshot.container_cpu_percent = round(total_cpu, 2)
 
         # PostgreSQL storage
         pg_size_mb = self._get_pg_storage_mb()
