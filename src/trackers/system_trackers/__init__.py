@@ -19,7 +19,7 @@ from src.trackers.system_trackers.hindsight import HindsightTracker  # noqa: F40
 from src.trackers.system_trackers.cognee import CogneeTracker  # noqa: F401
 from src.trackers.system_trackers.mem0 import Mem0Tracker  # noqa: F401
 from src.trackers.system_trackers.graphiti import GraphitiTracker  # noqa: F401
-from src.trackers.system_trackers.mindmemos import MindMemOSTracker  # noqa: F401
+from src.trackers.system_trackers.mindmemos import MindMemosTracker  # noqa: F401
 from src.trackers.system_trackers.evermemos import EvermemosTracker  # noqa: F401
 from src.trackers.system_trackers.memoscloud import MemosCloudTracker  # noqa: F401
 from src.trackers.system_trackers.memucloud import MemuCloudTracker  # noqa: F401
@@ -32,7 +32,7 @@ __all__ = [
     "CogneeTracker",
     "Mem0Tracker",
     "GraphitiTracker",
-    "MindMemOSTracker",
+    "MindMemosTracker",
     "EvermemosTracker",
     "MemosCloudTracker",
     "MemuCloudTracker",

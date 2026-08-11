@@ -12,7 +12,7 @@ api_base_url: "${MINDMEMOS_API_BASE_URL:http://127.0.0.1:8000}"
 api_key: "${MINDMEMOS_API_KEY:dev-api-key-001}"
 api_key_002: "${MINDMEMOS_API_KEY_002:dev-api-key-002}"
 # Schema 算法每个会话要跑多轮 LLM（实体建模+抽取），单次 add 实测 ~160s，放宽 SDK 超时
-timeout: 600
+timeout: 1200
 
 # Memory algorithm: vanilla or schema
 memory_algorithm: "${MINDMEMOS_MEMORY_ALGORITHM:vanilla}"
