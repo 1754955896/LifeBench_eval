@@ -6,8 +6,25 @@ description: "DataTest adapter for testing data flow"
 
 adapter: "datatest"
 
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  temperature: 0.3
+  max_tokens: 32768
+
+answer:
+  temperature: 0
+
 add:
   num_workers: 1
+  fast: true
 
 search:
+  mode: "agentic"
   num_workers: 1
+
+stats:
+  enabled: true
+  output_filename: token_stats.json

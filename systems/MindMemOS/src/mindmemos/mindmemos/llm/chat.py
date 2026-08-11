@@ -94,6 +94,7 @@ class LLMClient:
                     status="error",
                     latency_ms=round((perf_counter() - start) * 1000, 2),
                     error=str(exc),
+                    exc_info=True,
                 )
                 raise
             usage = usage_tokens(getattr(resp, "usage", None))

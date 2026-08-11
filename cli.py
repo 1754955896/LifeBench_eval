@@ -176,13 +176,24 @@ async def main():
         print(f"[red]❌ Invalid system config: {exc}[/red]")
         return
 
+    # Determine output directory (before builder so it can write logs into it)
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        if args.run_name:
+            output_dir = project_root / "results" / f"{args.dataset}-{args.system}-{args.run_name}"
+        else:
+            output_dir = project_root / "results" / f"{args.dataset}-{args.system}"
+
     # Run system setup via builder (env script, docker, etc.)
     builder_config = system_config.get("builder")
     builder = None
     if builder_config:
         print("\n[bold cyan]Initializing memory system...[/bold cyan]")
         try:
-            builder = create_builder(builder_config, system_config, project_root=str(project_root))
+            builder_system_config = dict(system_config)
+            builder_system_config["output_dir"] = str(output_dir)
+            builder = create_builder(builder_config, builder_system_config, project_root=str(project_root))
             if not await builder.build():
                 print("[red]❌ System initialization failed, aborting[/red]")
                 return
@@ -216,15 +227,6 @@ async def main():
     print(
         f"  ✅ Loaded {len(dataset.samples)} conversations, {sum(len(s.qa_pairs) for s in dataset.samples)} QA pairs"
     )
-
-    # Determine output directory
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        if args.run_name:
-            output_dir = project_root / "results" / f"{args.dataset}-{args.system}-{args.run_name}"
-        else:
-            output_dir = project_root / "results" / f"{args.dataset}-{args.system}"
 
     print(f"\n[bold cyan]Initializing components...[/bold cyan]")
 

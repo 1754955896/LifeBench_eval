@@ -12,8 +12,17 @@ import argparse
 import os
 import asyncio
 import sys
+import io
 import uvicorn
 import logging
+
+# Fix Windows GBK encoding for emoji characters in log messages
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 # 这里环境变量还没加载，所以不能使用get_logger
 logger = logging.getLogger(__name__)

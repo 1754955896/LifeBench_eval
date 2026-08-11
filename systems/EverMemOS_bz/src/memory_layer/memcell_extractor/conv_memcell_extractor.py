@@ -244,9 +244,7 @@ class ConvMemCellExtractor(MemCellExtractor):
         )
         time_gap_info = self._calculate_time_gap(conversation_history, new_messages)
 
-        print(
-            f"[ConversationEpisodeBuilder] Detect boundary – history tokens: {len(history_text)} new tokens: {len(new_text)} time gap: {time_gap_info}"
-        )
+        #print(f"[ConversationEpisodeBuilder] Detect boundary – history tokens: {len(history_text)} new tokens: {len(new_text)} time gap: {time_gap_info}")
 
         prompt = self.conv_boundary_detection_prompt.format(
             conversation_history=history_text,
@@ -256,9 +254,7 @@ class ConvMemCellExtractor(MemCellExtractor):
         for i in range(5):
             try:
                 resp = await self.llm_provider.generate(prompt)
-                print(
-                    f"[ConversationEpisodeBuilder] Boundary response length: {len(resp)} chars"
-                )
+                #print(f"[ConversationEpisodeBuilder] Boundary response length: {len(resp)} chars")
 
                 # Parse JSON response from LLM boundary detection
                 json_match = re.search(r"\{[^{}]*\}", resp, re.DOTALL)

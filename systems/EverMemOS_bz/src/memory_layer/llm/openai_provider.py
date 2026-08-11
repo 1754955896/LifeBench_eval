@@ -56,6 +56,9 @@ class OpenAIProvider(LLMProvider):
         self.max_tokens = max_tokens
         self.enable_stats = enable_stats  # 新增
 
+        # Disable thinking mode if LLM_DISABLE_THINKING env var is set
+        self._disable_thinking = os.getenv("LLM_DISABLE_THINKING", "").lower() in ("1", "true", "yes")
+
         # Use OpenRouter API key and base URL
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         self.base_url = base_url or "https://openrouter.ai/api/v1"
@@ -103,6 +106,14 @@ class OpenAIProvider(LLMProvider):
             "provider": openrouter_provider,
             "response_format": response_format,
         }
+        if extra_body:
+            data["extra_body"] = extra_body
+
+        # Check if thinking should be disabled (for models that support it)
+        if self._disable_thinking:
+            data.setdefault("extra_body", {})
+            if "thinking" not in data["extra_body"]:
+                data["extra_body"]["thinking"] = {"type": "disabled"}
         # print(data)
         # print(data["extra_body"])
         # Add max_tokens if specified
@@ -177,7 +188,7 @@ class OpenAIProvider(LLMProvider):
                             f"[OpenAI-{self.model}] 耗时: {end_time - start_time:.2f}s"
                         )
                         # 如果耗时太长
-                        if end_time - start_time > 30:
+                        if end_time - start_time > 60:
                             logger.warning(
                                 f"[OpenAI-{self.model}] 耗时太长: {end_time - start_time:.2f}s"
                             )

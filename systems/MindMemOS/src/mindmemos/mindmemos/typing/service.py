@@ -201,7 +201,7 @@ class SearchPipelineInput(BaseModel):
     agentic: bool = False
     """Whether to wrap the selected search pipeline in multi-round orchestration."""
 
-    max_rounds: int = 3
+    max_rounds: int = 1
     """Request-level maximum agentic rounds; ignored when agentic is false."""
 
     include_patches: bool = True

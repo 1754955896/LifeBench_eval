@@ -62,7 +62,7 @@ Requirements:
 8. For time references, use the dual format: "relative time (absolute date)" to support different question types.
 9. When describing decisions or actions, naturally include the reasoning or motivation behind them.
 10. Use specific names consistently rather than pronouns to avoid ambiguity in retrieval.
-11. The content must include all important information from the conversation, and the language of the content must be chinese.
+11. The content must include all important information from the conversation, and its language must match the input content language.
 
 Return only the JSON object, do not add any other text:
 """

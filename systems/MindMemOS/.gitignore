@@ -13,7 +13,8 @@ config/*.yaml
 !config/*.example.yaml
 config/mindmemos/*.yaml
 !config/mindmemos/*.example.yaml
-!config/mindmemos/api_keys.yaml
+# api_keys.yaml contains API keys - do not commit
+# !config/mindmemos/api_keys.yaml
 config/mindmemos_eval/*.yaml
 !config/mindmemos_eval/*.example.yaml
 

@@ -19,10 +19,12 @@ _ADAPTER_MODULES: Dict[str, str] = {
     "memu_server": "src.adapters.memu_server_adapter",
     "graphrag": "src.adapters.graphrag_adapter",
     "graphiti_local": "src.adapters.graphiti_local_adapter",
+    "graphrag": "src.adapters.graphrag_adapter",
     "evermemos": "src.adapters.evermemos_adapter",
     "evermemos_native": "src.adapters.evermemos_native_adapter",
     "mindmemos": "src.adapters.mindmemos_adapter",
     "datatest": "src.adapters.datatest_adapter",
+    "memu_cloud": "src.adapters.memu_cloud_adapter",
 }
 
 

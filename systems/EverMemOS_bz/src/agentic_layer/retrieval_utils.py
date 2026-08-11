@@ -469,29 +469,23 @@ async def rerank_candidates(
             
             candidates_for_rerank.append(hit)
         
-        # 调用 rerank 服务
-        reranked_hits = await rerank_service._rerank_all_hits(
+        # 调用 rerank 服务（rerank_memories 返回重排后的 hits，每个 hit 含 index + _rerank_score）
+        reranked_hits = await rerank_service.rerank_memories(
             query,
             candidates_for_rerank,
-            top_k=top_n
         )
-        
+
         # 转换格式：从 rerank 返回的格式转为 (doc, score) 格式
         if reranked_hits:
-            # reranked_hits 格式: [{"index": ..., "relevance_score": ...}, ...]
-            # candidates 格式: [(doc, score), ...]
-            
             reranked_results = []
             for hit in reranked_hits[:top_n]:
-                # 提取索引
                 if isinstance(hit, dict):
-                    idx = hit.get("index", hit.get("global_index", 0))
-                    new_score = hit.get("relevance_score", 0.0)
+                    idx = hit.get("index", 0)
+                    new_score = hit.get("_rerank_score", 0.0)
                 else:
-                    # 如果返回的是 tuple，说明格式有问题，跳过
                     logger.warning(f"Unexpected rerank result type: {type(hit)}")
                     continue
-                
+
                 if 0 <= idx < len(candidates):
                     doc = candidates[idx][0]
                     reranked_results.append((doc, new_score))

@@ -10,6 +10,7 @@ Agentic Retrieval 工具函数
 import json
 import asyncio
 import logging
+import os
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -303,6 +304,13 @@ async def check_sufficiency(
         >>> print(is_sufficient)  # False
         >>> print(missing)  # ["用户的具体菜系偏好", "口味喜好"]
     """
+    # 开关:AGENTIC_SKIP_SUFFICIENCY=1 时跳过 LLM 判断,直接视为充分(省时)
+    if os.getenv("AGENTIC_SKIP_SUFFICIENCY", "0") == "1":
+        logger.info(
+            "Sufficiency check skipped (AGENTIC_SKIP_SUFFICIENCY=1), treated as sufficient"
+        )
+        return True, "skipped by AGENTIC_SKIP_SUFFICIENCY", []
+
     try:
         # 1. 格式化文档
         retrieved_docs = format_documents_for_llm(results, max_docs=max_docs)

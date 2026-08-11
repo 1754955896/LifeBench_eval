@@ -787,9 +787,9 @@ class MemoryManager:
         # 使用rerank服务进行重排序
         try:
             rerank_service = get_rerank_service()
-            reranked_hits = await rerank_service._rerank_all_hits(
-                query, all_hits, top_k
-            )
+            reranked_hits = await rerank_service.rerank_memories(
+                query, all_hits
+            )[:top_k]
 
             logger.debug(f"使用rerank服务后取top_k结果数: {len(reranked_hits)} 条")
 
@@ -1722,18 +1722,18 @@ class MemoryManager:
                     for i, mem in enumerate(round1_memories)
                 ]
 
-                reranked_hits = await rerank_service._rerank_all_hits(
-                    query, candidates_for_rerank, top_k=config.round1_rerank_top_n
+                reranked_hits = await rerank_service.rerank_memories(
+                    query, candidates_for_rerank
                 )
 
-                # 提取 Top 5 用于 LLM 判断
+                # 提取 Top N 用于 LLM 判断
                 top5_for_llm = []
                 for hit in reranked_hits[: config.round1_rerank_top_n]:
                     idx = hit.get("index", 0)
                     if 0 <= idx < len(round1_memories):
                         mem = round1_memories[idx]
                         # 转换为 (candidate, score) 格式供 LLM 使用
-                        top5_for_llm.append((mem, hit.get("relevance_score", 0)))
+                        top5_for_llm.append((mem, hit.get("_rerank_score", 0)))
 
                 metadata["round1_reranked_count"] = len(top5_for_llm)
                 logger.info(
@@ -1892,19 +1892,18 @@ class MemoryManager:
                     for i, mem in enumerate(combined_memories)
                 ]
 
-                reranked_hits = await rerank_service._rerank_all_hits(
+                reranked_hits = await rerank_service.rerank_memories(
                     query,  # 使用原始查询
                     candidates_for_rerank,
-                    top_k=config.final_top_n,
                 )
 
-                # 提取最终 Top 20
+                # 提取最终 Top N
                 final_memories = []
                 for hit in reranked_hits[: config.final_top_n]:
                     idx = hit.get("index", 0)
                     if 0 <= idx < len(combined_memories):
                         mem = combined_memories[idx].copy()
-                        mem["score"] = hit.get("relevance_score", mem.get("score", 0))
+                        mem["score"] = hit.get("_rerank_score", mem.get("score", 0))
                         final_memories.append(mem)
 
                 logger.info(f"Rerank: Final Top {len(final_memories)} selected")

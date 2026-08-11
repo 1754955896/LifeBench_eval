@@ -20,6 +20,10 @@ from src.trackers.system_trackers.cognee import CogneeTracker  # noqa: F401
 from src.trackers.system_trackers.mem0 import Mem0Tracker  # noqa: F401
 from src.trackers.system_trackers.graphiti import GraphitiTracker  # noqa: F401
 from src.trackers.system_trackers.mindmemos import MindMemOSTracker  # noqa: F401
+from src.trackers.system_trackers.evermemos import EvermemosTracker  # noqa: F401
+from src.trackers.system_trackers.memoscloud import MemosCloudTracker  # noqa: F401
+from src.trackers.system_trackers.memucloud import MemuCloudTracker  # noqa: F401
+
 
 __all__ = [
     "SystemTracker",
@@ -29,6 +33,9 @@ __all__ = [
     "Mem0Tracker",
     "GraphitiTracker",
     "MindMemOSTracker",
+    "EvermemosTracker",
+    "MemosCloudTracker",
+    "MemuCloudTracker",
     "register_tracker",
     "get_tracker",
     "list_trackers",
