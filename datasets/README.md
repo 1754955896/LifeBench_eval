@@ -8,6 +8,7 @@
 datasets/
 ├── lifebench_locomo_format/       # LifeBench LoCoMo 标准格式数据集
 ├── lifebench_locomo_3people/      # 3人对话版本的 LifeBench LoCoMo
+├── lifebench_offline/             # LifeBench 离线版（ask_time 统一为 2025-12-31）
 ├── locomo/                        # 原始 LoCoMo 数据
 └── smoke/                          # 冒烟测试数据集
 ```
@@ -25,6 +26,12 @@ LifeBench 标准格式的 LoCoMo 数据集。
 3人对话版本的 LifeBench LoCoMo 数据集。
 
 - `lifebench_locomo_3people.json`
+
+### lifebench_offline/
+
+LifeBench 离线版数据集（10 人 / 3380 QA）。由 `lifebench_locomo_format` 生成，所有 QA 的 `ask_time` 字段强制为 `2025-12-31`，其余字段不变。
+
+- `lifebench_offline.json`
 
 ### locomo/
 

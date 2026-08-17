@@ -11,10 +11,12 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+import httpx
 
 from src.adapters.base import BaseAdapter, ChunkedMessage
 from src.adapters.registry import register_adapter
@@ -68,8 +70,11 @@ class GraphitiLocalAdapter(BaseAdapter):
         # Search defaults
         self.top_k = config.get("search", {}).get("top_k", 10)
 
-        # Batch size for add_episode_bulk (default 10)
+        # Batch size for add_episode (default 10)
         self.batch_size = max(1, int(config.get("batch_size", 10)))
+
+        # Combined extraction: single LLM call per episode for nodes + edges
+        self.use_combined_extraction = bool(config.get("use_combined_extraction", False))
 
         # LLM proxy URL — when set, LLM chat traffic is routed via proxy
         self.llm_proxy_url = config.get("llm_proxy_url", "").strip()
@@ -94,53 +99,109 @@ class GraphitiLocalAdapter(BaseAdapter):
         self._shared_driver: Any = None
         self._shared_driver_lock = asyncio.Lock()
 
+        # Shared httpx.AsyncClient — each Graphiti instance would otherwise create
+        # its own httpx client for the LLM provider, each with its own connection
+        # pool. With 10 concurrent samples, this creates 10 independent connection
+        # pools that together overwhelm the local TCP stack. A single shared client
+        # with one pooled connection pool avoids port exhaustion.
+        self._shared_http_client: Any = None
+        self._shared_http_client_lock = asyncio.Lock()
+
+        # Multi-key LLM client cache: key_index → OpenAIGenericClient
+        self._llm_client_cache: dict[int, Any] = {}
+        self._llm_keys: list[str] = []  # populated lazily
+        self._key_rr: int = 0  # round-robin counter for key distribution
+
     # ------------------------------------------------------------------
     # LLM / Embedder / Reranker helpers (independently configurable)
     # ------------------------------------------------------------------
 
-    def _get_llm_client(self):
-        """Create an LLM client matching the Graphiti eval pattern.
+    async def _get_shared_http_client(self):
+        """Return the single shared httpx.AsyncClient for all Graphiti instances.
 
-        Uses OpenAIGenericClient (json_object mode) for non-OpenAI providers
-        (e.g. DeepSeek) that do not support the responses.parse API.
-
-        Explicitly sets longer httpx timeouts (connect=60s, read=600s) so
-        concurrent LLM calls don't fail with "Request timed out" under load.
+        One connection pool shared across all concurrent samples avoids local
+        TCP port exhaustion and connection-pool thrashing under high concurrency.
+        Pool limits are raised to handle 200+ concurrent LLM requests (10 samples
+        × 20 max_coroutines); 500 connections, 100 keepalive.
         """
-        import httpx
+        if self._shared_http_client is None:
+            async with self._shared_http_client_lock:
+                if self._shared_http_client is None:
+                    import httpx
+                    _limits = httpx.Limits(
+                        max_connections=500,
+                        max_keepalive_connections=100,
+                    )
+                    _timeout = httpx.Timeout(
+                        connect=60.0, read=1200.0, write=1200.0, pool=1200.0,
+                    )
+                    self._shared_http_client = httpx.AsyncClient(
+                        timeout=_timeout, limits=_limits,
+                    )
+        return self._shared_http_client
+
+    def _get_llm_client(self, key_index: int = 0):
+        """Create or return a cached LLM client for *key_index*.
+
+        When multiple API keys are configured (via comma-separated string
+        or YAML list), each key gets its own client. Conversations are
+        pinned to a key by hashing group_id, distributing concurrent
+        requests across keys and bypassing per-key rate limits.
+        """
+        if key_index in self._llm_client_cache:
+            return self._llm_client_cache[key_index]
+
         from openai import AsyncOpenAI
         from graphiti_core.llm_client.config import LLMConfig
         from graphiti_core.llm_client.openai_client import OpenAIClient
         from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
-        api_key = self._resolve_api_key("LLM")
+        # Lazy-init key list on first call
+        if not self._llm_keys:
+            self._llm_keys = self._resolve_api_keys("LLM")
+            if not self._llm_keys:
+                raise RuntimeError('No LLM API key configured')
+            logger.info("LLM multi-key: %d key(s) available", len(self._llm_keys))
+            print(f"[graphiti_local] Multi-key enabled: {len(self._llm_keys)} API keys")
+
+        key_index = key_index % len(self._llm_keys)
+        if key_index in self._llm_client_cache:
+            return self._llm_client_cache[key_index]
+
+        api_key = self._llm_keys[key_index]
         base_url = self._resolve_base_url("LLM")
         model = self.llm_config.get("model", os.environ.get("LLM_MODEL", "deepseek-chat"))
 
-        # Route LLM traffic through proxy for token tracking when configured
         if self.llm_proxy_url:
-            logger.info("LLM client routed through proxy: %s", self.llm_proxy_url)
             base_url = self.llm_proxy_url
 
         llm_cfg = LLMConfig(api_key=api_key, base_url=base_url, model=model, temperature=0)
 
-        # Custom httpx client with generous timeouts for high-concurrency scenarios.
-        # Default connect=5s is too short when 100+ concurrent connections open.
-        _timeout = httpx.Timeout(connect=60.0, read=600.0, write=600.0, pool=600.0)
-        _http_client = httpx.AsyncClient(timeout=_timeout)
+        _http_client = self._shared_http_client
+        if _http_client is None:
+            raise RuntimeError('Shared HTTP client not initialized')
 
+        _timeout = httpx.Timeout(connect=60.0, read=1200.0, write=1200.0, pool=1200.0)
         if "openai.com" in base_url:
             async_client = AsyncOpenAI(
                 api_key=api_key, base_url=base_url, http_client=_http_client,
+                timeout=_timeout,
             )
-            return OpenAIClient(config=llm_cfg, client=async_client)
+            client = OpenAIClient(config=llm_cfg, client=async_client)
+        else:
+            async_client = AsyncOpenAI(
+                api_key=api_key, base_url=base_url, http_client=_http_client,
+                timeout=_timeout,
+            )
+            client = OpenAIGenericClient(
+                config=llm_cfg, client=async_client, structured_output_mode="json_object",
+                max_tokens=131072,
+            )
 
-        async_client = AsyncOpenAI(
-            api_key=api_key, base_url=base_url, http_client=_http_client,
-        )
-        return OpenAIGenericClient(
-            config=llm_cfg, client=async_client, structured_output_mode="json_object",
-        )
+        self._llm_client_cache[key_index] = client
+        logger.info("LLM client key[%d/%d]: model=%s base=%s",
+                     key_index, len(self._llm_keys), model, base_url)
+        return client
 
     def _get_embedder_client(self):
         """Create an embedder client from YAML config with env fallbacks."""
@@ -275,22 +336,43 @@ class GraphitiLocalAdapter(BaseAdapter):
     # ------------------------------------------------------------------
 
     def _resolve_api_key(self, prefix: str) -> str:
-        """Resolve API key for a service prefix (LLM, VECTORIZE, RERANK).
+        """Resolve the first API key (backward-compatible single-key path)."""
+        keys = self._resolve_api_keys(prefix)
+        return keys[0] if keys else ""
 
-        Priority: env var {PREFIX}_API_KEY → YAML config → env var OPENAI_API_KEY
+    def _resolve_api_keys(self, prefix: str) -> list[str]:
+        """Resolve API keys as a list for LLM multi-key load distribution.
+
+        Priority: env var {PREFIX}_API_KEY → YAML config api_key field
+        Supports: comma-separated string, YAML list, single string.
         """
-        env_val = os.environ.get(f"{prefix}_API_KEY", "").strip()
+        if prefix != "LLM":
+            # Non-LLM services only need a single key
+            env_val = os.environ.get(f"{prefix}_API_KEY", "").strip()
+            if env_val and env_val != "EMPTY":
+                return [env_val]
+            if prefix == "VECTORIZE":
+                cfg = self.embedder_config.get("api_key", "")
+            elif prefix == "RERANK":
+                cfg = self.rerank_config.get("api_key", "")
+            else:
+                cfg = ""
+            return [cfg] if cfg else []
+
+        # LLM: YAML config first, env vars as fallback
+        cfg_val = self.llm_config.get("api_key", "")
+        if isinstance(cfg_val, list):
+            return [k.strip() for k in cfg_val if k.strip()]
+        if isinstance(cfg_val, str) and cfg_val.strip():
+            return [k.strip() for k in cfg_val.split(",") if k.strip()]
+
+        env_val = os.environ.get("LLM_API_KEY", "").strip()
         if env_val and env_val != "EMPTY":
-            return env_val
+            return [k.strip() for k in env_val.split(",") if k.strip()]
 
-        if prefix == "LLM":
-            return self.llm_config.get("api_key", os.environ.get("OPENAI_API_KEY", ""))
-        if prefix == "VECTORIZE":
-            return self.embedder_config.get("api_key", "")
-        if prefix == "RERANK":
-            return self.rerank_config.get("api_key", "")
-
-        return ""
+        # Final fallback: OPENAI_API_KEY
+        fallback = os.environ.get("OPENAI_API_KEY", "")
+        return [fallback] if fallback else []
 
     def _resolve_base_url(self, prefix: str) -> str:
         """Resolve base URL for a service prefix (LLM, VECTORIZE, RERANK).
@@ -356,10 +438,20 @@ class GraphitiLocalAdapter(BaseAdapter):
                 if group_id not in self._graphiti_by_group:
                     from graphiti_core.graphiti import Graphiti
 
-                    llm_client = self._get_llm_client()
+                    # Ensure shared resources are initialized before creating
+                    # the LLM client (which now depends on the shared HTTP client)
+                    await self._get_shared_http_client()
+                    shared_driver = await self._get_shared_driver()
+
+                    # Round-robin key distribution: each _get_graphiti()
+                    # call gets the next key, cycling through all keys.
+                    # Same group across different days may use different keys
+                    # but hash-based determinism isn't needed.
+                    key_index = self._key_rr % 1024
+                    self._key_rr += 1
+                    llm_client = self._get_llm_client(key_index)
                     embedder = self._get_embedder_client()
                     cross_encoder = self._get_cross_encoder()
-                    shared_driver = await self._get_shared_driver()
 
                     graphiti = Graphiti(
                         uri=self.neo4j_uri,
@@ -382,6 +474,9 @@ class GraphitiLocalAdapter(BaseAdapter):
         if self._shared_driver is not None:
             await self._shared_driver.close()
             self._shared_driver = None
+        if self._shared_http_client is not None:
+            await self._shared_http_client.aclose()
+            self._shared_http_client = None
 
     # ------------------------------------------------------------------
     # Ingest (mirrors eval_e2e_graph_building.build_subgraph)
@@ -390,14 +485,15 @@ class GraphitiLocalAdapter(BaseAdapter):
     async def add_chunks(
         self, chunks: List[ChunkedMessage], **kwargs
     ) -> Dict[str, Any]:
-        """Ingest messages following the Graphiti LongMemEval eval pattern.
+        """Ingest messages via add_episode_bulk for combined extraction and batch dedup.
 
-        Messages are grouped into batches (batch_size) and each batch is
-        concatenated into a single episode. This gives the LLM extractor
-        enough context to avoid redundant edges while keeping prompt sizes
-        bounded.
+        Messages are grouped into batches (batch_size) and each batch becomes a
+        RawEpisode. All episodes are processed in a single add_episode_bulk call,
+        which enables cross-episode node/edge dedup and combined extraction
+        (single LLM call per episode for nodes + edges).
         """
         from graphiti_core.nodes import EpisodeType
+        from graphiti_core.utils.bulk_utils import RawEpisode
 
         total_added = 0
         total_failed = 0
@@ -445,52 +541,65 @@ class GraphitiLocalAdapter(BaseAdapter):
             # Track latest session date for answer() temporal grounding
             self._track_ref_date(chunk, latest_ref_date)
 
-            logger.info(
-                "ADD: conversation=%s group=%s messages=%d batch_size=%d",
-                chunk.conversation_id, group_id, len(valid_msgs), self.batch_size,
-            )
-
-            # Process in batches: each batch → one concatenated episode
+            # Build RawEpisode batches for add_episode_bulk
+            raw_episodes: list[RawEpisode] = []
+            batch_indices: list[tuple[int, int, datetime]] = []  # (count, ref_time)
             for batch_start in range(0, len(valid_msgs), self.batch_size):
                 batch_msgs = valid_msgs[batch_start:batch_start + self.batch_size]
                 lines = [f"{speaker}: {content}" for _, speaker, content, _ in batch_msgs]
                 episode_body = "\n".join(lines)
-                reference_time = batch_msgs[0][3]  # timestamp of first msg in batch
+                reference_time = batch_msgs[0][3]
+                raw_episodes.append(RawEpisode(
+                    name="",
+                    content=episode_body,
+                    source_description=f"conversation {chunk.conversation_id}",
+                    source=EpisodeType.message,
+                    reference_time=reference_time,
+                ))
+                batch_indices.append((len(batch_msgs), reference_time))
 
-                for attempt in range(1, 4):
-                    try:
-                        result = await graphiti.add_episode(
-                            name="",
-                            episode_body=episode_body,
-                            reference_time=reference_time,
-                            source=EpisodeType.message,
-                            source_description=f"conversation {chunk.conversation_id}",
-                            group_id=group_id,
-                        )
-                        total_added += len(batch_msgs)
+            if not raw_episodes:
+                continue
+
+            logger.info(
+                "ADD: conversation=%s group=%s messages=%d episodes=%d batch_size=%d combined=%s",
+                chunk.conversation_id, group_id, len(valid_msgs), len(raw_episodes),
+                self.batch_size, self.use_combined_extraction,
+            )
+
+            for attempt in range(1, 3):
+                try:
+                    result = await graphiti.add_episode_bulk(
+                        bulk_episodes=raw_episodes,
+                        group_id=group_id,
+                        use_combined_extraction=self.use_combined_extraction,
+                    )
+                    for i, ep in enumerate(result.episodes):
+                        count, ref_time = batch_indices[i]
+                        total_added += count
                         per_episode_metadata.append({
-                            "batch_size": len(batch_msgs),
+                            "batch_size": count,
                             "nodes_extracted": len(result.nodes),
                             "edges_extracted": len(result.edges),
-                            "episode_uuid": result.episode.uuid,
-                            "reference_time": reference_time.isoformat(),
+                            "episode_uuid": ep.uuid,
+                            "reference_time": ref_time.isoformat(),
                         })
-                        break
-                    except Exception as exc:
-                        delay = 5 * attempt
-                        if attempt < 3:
-                            logger.warning(
-                                "ADD batch failed (conversation=%s, size=%d, attempt=%d/3): %s — retrying in %ds",
-                                chunk.conversation_id, len(batch_msgs), attempt,
-                                str(exc)[:150], delay,
-                            )
-                            await asyncio.sleep(delay)
-                        else:
-                            logger.warning(
-                                "ADD batch failed (conversation=%s, size=%d): %s",
-                                chunk.conversation_id, len(batch_msgs), str(exc)[:200],
-                            )
-                            total_failed += len(batch_msgs)
+                    break
+                except Exception as exc:
+                    delay = 5 * attempt + random.uniform(0, 5)
+                    if attempt < 3:
+                        logger.warning(
+                            "ADD bulk failed (conversation=%s, episodes=%d, attempt=%d/3): %s — retrying in %ds",
+                            chunk.conversation_id, len(raw_episodes), attempt,
+                            str(exc)[:150], delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.warning(
+                            "ADD bulk failed (conversation=%s, episodes=%d): %s",
+                            chunk.conversation_id, len(raw_episodes), str(exc)[:200],
+                        )
+                        total_failed += sum(c for c, _ in batch_indices)
 
         self._conversation_reference_date.update(latest_ref_date)
 
