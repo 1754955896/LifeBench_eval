@@ -1,15 +1,33 @@
 """
-Recall@K evaluation for LifeBench search results.
+Coverage + answerability evaluation for LifeBench search results.
 
-Evaluates whether ground-truth evidence items are covered by the top-K
-retrieved chunks, using an LLM judge to determine semantic coverage.
+Single-pass LLM judge: for every question, feed the question, reference answer,
+ALL evidence items, and ALL search results in ONE prompt. The judge performs
+two tasks together:
+
+  1. Evidence-result matching — for every evidence item, list which search
+     result(s) contain its "main info" (the facts needed to answer the
+     question). A result covers an evidence if it contains that evidence's
+     main info — one result, or several results combined.
+  2. Answerability            — whether the results as a whole can answer the
+     question (binary 0 / 1).
+
+Coverage, recall and precision are then *derived from the matching*:
+  - covered[i] = 1 if evidence i matched at least one result
+  - recall     = macro-average coverage (mean of per-question coverage)
+  - precision  = (distinct results covering >=1 evidence) / (total results)
+
+No ranking is measured. The judge sees every result, and "coverage" is
+deliberately union-based so systems that split one fact across multiple
+retrieval units (graph fragments, edge+entity pairs, consecutive turns) are
+not penalized.
 
 Usage:
     python -m src.utils.recall_evaluator --results-dir results/lifebench-hindsight
 
-    # Custom K values and max concurrent:
+    # Concurrency / resume:
     python -m src.utils.recall_evaluator --results-dir results/lifebench-hindsight \\
-        --k-values 5,10,15,20 --concurrency 20
+        --concurrency 20
 """
 
 import argparse
@@ -20,13 +38,36 @@ import re
 import subprocess
 import sys
 import textwrap
-import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 from dotenv import load_dotenv
 from tqdm import tqdm
+
+
+# ---------------------------------------------------------------------------
+# Token counting (for memory-unit granularity reporting)
+# ---------------------------------------------------------------------------
+
+try:
+    import tiktoken
+    _TOKENIZER = tiktoken.get_encoding("cl100k_base")
+except Exception:  # pragma: no cover - fallback heuristic below
+    _TOKENIZER = None
+
+
+def _count_tokens(text: str) -> int:
+    """Token count for one memory unit (CJK-aware fallback if tiktoken missing)."""
+    if not text:
+        return 0
+    if _TOKENIZER is not None:
+        return len(_TOKENIZER.encode(text))
+    cjk = len(re.findall(r"[一-鿿]", text))
+    rest = re.sub(r"[一-鿿]", " ", text)
+    return cjk + len(re.findall(r"\S+", rest))
+
 
 # ---------------------------------------------------------------------------
 # Evidence formatting
@@ -89,16 +130,16 @@ def _fmt_evidence(ev: dict, index: int) -> str:
             for turn_key, turn_val in conv.items():
                 if isinstance(turn_val, dict):
                     user = turn_val.get("user", {}) or {}
-                    agent = turn_val.get("agent", {}) or {}
+                    assistant = turn_val.get("assistant", {}) or {}
                     user_action = user.get("action", "")
                     user_content = user.get("content", "")
-                    agent_content = agent.get("content", "")
+                    assistant_content = assistant.get("content", "")
                     if user_action:
                         parts.append(f"   {turn_key} user({user_action}): {user_content}")
                     else:
                         parts.append(f"   {turn_key} user: {user_content}")
-                    if agent_content:
-                        parts.append(f"   {turn_key} agent: {agent_content}")
+                    if assistant_content:
+                        parts.append(f"   {turn_key} assistant: {assistant_content}")
         else:
             parts.append(f"   内容: {json.dumps(raw, ensure_ascii=False)}")
 
@@ -146,20 +187,52 @@ def _fmt_search_result(result: dict, index: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM Judge prompt
+# Single LLM Judge prompt (evidence coverage + answerability)
 # ---------------------------------------------------------------------------
 
 JUDGE_SYSTEM = textwrap.dedent("""\
-你是记忆检索系统的评估员。你需要判断检索结果与证据项之间的**全部覆盖关系**。
+你是记忆检索系统的评估员。对每个问题，你需要同时完成两项判定：证据-结果匹配、可回答性。
 
+【关于检索单元粒度——务必先读】
+不同记忆系统返回的"检索结果"粒度差异很大，可能是：
+- 一条简洁的事实（如"3月2日参加了陶艺课"）；
+- 一整天的日记/时间线（把当天多个事件混在一起，夹杂大量与本题无关的内容）；
+- 一个图谱节点或碎片（只含半句话，需要多条拼合）；
+- 一段原始对话或一条蒸馏后的记忆。
+判断时**只关心"答案/证据的关键事实点是否出现在单元里"**，不要因为单元粗大、夹杂无关
+内容、或表述冗长就降低判定。关键事实点埋在无关内容里，也算覆盖/可回答。
+
+【先思考，再下结论】在给出判定前，请按以下步骤在心里推理，不要跳过：
+1. 读参考答案，提炼出答案的"关键事实点"（事件、人物、时间、关键数据等），这是你判断的锚点。
+2. 逐条读证据项，明确每条证据"回答本题所需的主要信息"是什么（忽略与答案无关的次要细节）。
+3. 逐条读检索结果，为每条证据找出哪些检索结果包含了它的主要信息（可一条、可多条拼合）。
+4. 最后单独判断可回答性（见"二"）。可回答性是独立判断，不要因为"证据没有全部覆盖"就判 0。
+
+一、证据-结果匹配：为每条证据，找出覆盖其"主要信息"的检索结果编号。
 判断"覆盖"的标准：
-- 检索结果包含了该证据项的核心事实信息：事件内容、人物、时间、关键数据等
-- 不要求逐字相同，语义等价、改写、合理归纳都算覆盖
-- 检索结果必须是"实质包含"，不能只是话题沾边但没给出具体信息
-- 例：证据项说"2月16日粤绣在线分享，展示《牡丹图》"，检索结果提到"粤绣分享会展示了牡丹图"
-  或"2月在线分享粤绣作品"都算覆盖；只提"参加了粤绣活动"但没说具体内容＝不算覆盖
+- **只要一个记忆单元（检索结果）包含了该证据回答本题所需的主要信息，就认为覆盖**：
+  即事件内容、人物、时间、关键数据等关键事实点。
+- **不因粒度/冗长而减分**：单元可能是整日日记、长对话或图谱碎片，夹杂大量无关内容；
+  只要主要信息确实出现在该单元里（哪怕只占一小段），就判为覆盖。
+- 不要求包含证据的全部细节，也不要求逐字相同；语义等价、改写、合理归纳都算覆盖。
+- 一条证据可能被 0 条、1 条或多条检索结果覆盖：
+  - 若被多条结果拼合覆盖（例如一条给时间、另一条给事件内容），把所有这些结果的编号都列出。
+  - 若未被覆盖，列出空数组 []。
+- 一条检索结果也可能同时覆盖多条证据，允许它重复出现在不同证据的匹配列表里。
+- 检索结果必须是"实质包含主要信息"，不能只是话题沾边但没给出具体信息。
+- 例：证据项"2月16日粤绣在线分享，展示《牡丹图》"——一条结果提"粤绣分享会"、另一条提
+  "展示了牡丹图"，两条拼合还原主要信息，则这两条编号都列入该证据的匹配列表。
 
-输出必须是严格的JSON，不要额外文字。""")
+二、可回答性：判断检索结果整体是否足以回答该问题（0 或 1）。
+判断"可回答"的标准：
+- **不要求覆盖所有证据**：只要参考答案的"关键事实点"已被检索结果（单条或多条拼合）
+  提及或覆盖，就足以回答问题 → 1。
+- **不因单元粗大/碎片化而判 0**：只要答案的关键事实点能在检索结果里找到，即使它埋在
+  一长段夹杂无关内容的日记/对话里，也判为可回答。
+- 只有当答案的关键事实点缺失、检索结果只有话题沾边或完全无关的内容时 → 0。
+- 不要求检索结果本身已经组织成完整答案，只要求其中包含了回答所需的关键信息片段。
+
+只输出JSON，不要额外文字。""")
 
 JUDGE_USER_TEMPLATE = textwrap.dedent("""\
 ## 问题
@@ -167,70 +240,37 @@ JUDGE_USER_TEMPLATE = textwrap.dedent("""\
 
 ## 参考答案
 {reference_answer}
-（参考答案标识了问题的核心事实。判断覆盖时，优先关注证据中与答案事实相关的部分，
+（参考答案标识了问题的核心事实。判断覆盖和可回答性时，优先关注与答案事实相关的部分，
 忽略证据中与答案无关的次要细节。答案本身不参与覆盖判断，仅用于帮你聚焦关键信息。）
 
 ## 证据项（共{evidence_count}条，编号证据1～证据{evidence_count}）
 {evidence_text}
 
-## 检索结果（共{result_count}条，按相关性从高到低排序）
+## 检索结果（共{result_count}条，编号检索1～检索{result_count}）
 {results_text}
 
 ## 任务
-对每条证据项，找出所有覆盖它的检索结果。检索结果序号从1开始。
-多条检索结果可能同时覆盖同一条证据项；一条检索结果也可能覆盖多条证据项。
-如果无任何结果覆盖某证据项，对应位置填空数组[]。
+先按系统提示里的"思考流程"在心里推理，再输出结果：
+1. 对每条证据项，找出覆盖其"主要信息"的检索结果编号（编号从1开始：检索1 记为 1，检索2 记为 2）。
+   - 只要某个检索结果包含了该证据回答本题所需的主要信息（可一条、可多条拼合），
+     就把该编号列入这条证据的匹配列表。
+   - 检索单元可能是整日日记、图谱节点、长对话等粗粒度/碎片形式，夹杂无关内容很正常——
+     只要主要信息确实出现在该单元里，就列入匹配，不要因无关内容多而漏掉。
+   - 若没有任何结果覆盖该证据，则该证据对应空数组 []。
+2. 判断检索结果整体是否足以回答该问题，输出 0 或 1。注意：**不要求覆盖所有证据**，
+   只要答案的关键事实点已被提及/覆盖即可判 1，不要因单元粗大/碎片化而低估可回答性。
 
 ## 输出格式
-{{"evidence_ranks": [[3, 7, 12], [1], [], [5, 8]]}}
+{{"evidence_matches": [[1, 3], [], [2]], "answerable": 1, "reasoning": "answerable的判断依据，一句话"}}
 
-evidence_ranks 是一个数组，长度为{evidence_count}。
-- evidence_ranks[0] 对应证据1，evidence_ranks[1] 对应证据2，依此类推。
-- 每个元素是一个整数数组（可能为空），数组内的检索结果序号从1开始。
-
-只输出JSON。""")
-
-
-# ---------------------------------------------------------------------------
-# Quality judge prompt — can the question be answered from retrieved results?
-# ---------------------------------------------------------------------------
-
-QUALITY_SYSTEM = textwrap.dedent("""\
-你是记忆检索系统的质量评估员。判断给定的检索结果是否包含了回答问题的充足信息。
-
-**判断流程：**
-1. 先从参考答案中提取关键实体和事实：地名、人名、具体数字、时间、事件名称等
-2. 在检索结果中逐一搜索这些关键实体/事实
-3. 只有参考答案中**所有**关键实体/事实都能在检索结果中找到时，才判定信息充足
-
-标准：
-- 检索结果中包含回答问题所需的核心事实信息 → 充足
-- 检索结果缺失关键事实、只有话题沾边的内容、或完全无关 → 不充足
-- 不要求检索结果本身已经组织成完整答案，只要求其中包含了足够的信息片段
-
-**硬约束：如果在检索结果中完全找不到参考答案的关键实体（如具体地名、人名、金额），则无论上下文的日期/场景多么相关，信息都不充足。**
-
-只输出JSON，不要额外文字。""")
-
-QUALITY_USER_TEMPLATE = textwrap.dedent("""\
-## 问题
-{question}
-
-## 参考答案（判断充足性的唯一标准）
-{reference_answer}
-
-## 检索结果（共{result_count}条，按相关性从高到低排序）
-{results_text}
-
-## 任务
-1. 先从参考答案中提取关键信息点（地名、人名、数字、时间、事件等）。
-2. 逐条累加阅读检索结果（从检索1开始），判断读到第几条时检索结果已经**覆盖了参考答案的所有关键信息点**。输出第一条使信息充足的检索结果序号（从1开始）。如果读完所有结果，关键信息点仍有缺失，则输出0。
-3. 列出所有包含关键事实、对回答问题有实质帮助的检索结果序号（supporting_ranks），按升序排列。如果一条都没有，输出空数组[]。
-
-**关键约束**：如果参考答案中的具体地名、人名、数字在所有检索结果中均不存在，min_sufficient_rank必须为0，不能因为上下文/日期匹配而判为充足。
-
-## 输出格式
-{{"min_sufficient_rank": 3, "supporting_ranks": [1, 3]}}
+- evidence_matches 是一个数组，长度必须等于证据数（{evidence_count}）。
+  evidence_matches[0] 对应证据1，evidence_matches[1] 对应证据2，依此类推。
+  每个元素是一个整数数组，列出覆盖该证据主要信息的检索结果编号（1-based）。
+  - 编号从1开始：检索1 记为 1，检索2 记为 2，依此类推。
+  - 一条证据未被覆盖时，该元素为 []。
+  - 一条证据被多条结果拼合覆盖时，列出所有这些编号。
+- answerable 必须是整数 0 或 1。
+- reasoning 是 answerable 判断依据的一句话，简要说明即可，不要换行。
 
 只输出JSON。""")
 
@@ -284,8 +324,11 @@ def load_evidence_mapping(raw_dir: Path) -> Dict[str, List[dict]]:
 # LLM Judge
 # ---------------------------------------------------------------------------
 
+CHECKPOINT_FORMAT_VERSION = 4
+
+
 class RecallJudge:
-    """Calls LLM to judge evidence coverage in search results."""
+    """Calls LLM to judge evidence coverage + answerability in one pass."""
 
     def __init__(self, config: dict):
         self.model = "deepseek-v4-pro"
@@ -312,23 +355,24 @@ class RecallJudge:
         reference_answer: str,
         evidence_items: List[dict],
         search_results: List[dict],
-        max_rank: int,
-    ) -> Optional[Tuple[List[List[int]], List[int]]]:
+    ) -> Optional[Tuple[List[List[int]], int]]:
         """
-        Returns (evidence_ranks, result_evidence_counts) or None on failure.
-        evidence_ranks[i]: list of ALL ranks (1-indexed) covering evidence i, [] = none.
-        result_evidence_counts[j]: how many evidence items search result j+1 covers.
+        Returns (evidence_matches, answerable) or None.
+
+        evidence_matches[i]: list of 0-based search-result indices that cover
+                             evidence i's main info. Empty list = not covered.
+        answerable: 0 or 1.
         """
         if not evidence_items:
-            return [], []
+            return [], 0
 
-        result_count = min(len(search_results), max_rank)
+        result_count = len(search_results)
 
         evidence_text = "\n\n".join(
             _fmt_evidence(ev, i) for i, ev in enumerate(evidence_items)
         )
         results_text = "\n".join(
-            _fmt_search_result(r, i) for i, r in enumerate(search_results[:max_rank])
+            _fmt_search_result(r, i) for i, r in enumerate(search_results)
         )
 
         user_prompt = JUDGE_USER_TEMPLATE.format(
@@ -366,9 +410,9 @@ class RecallJudge:
                     data = await resp.json()
 
                 content = data["choices"][0]["message"]["content"]
-                result = self._parse_response(content, len(evidence_items), result_count)
-                if result is not None:
-                    return result
+                parsed = self._parse_response(content, len(evidence_items), result_count)
+                if parsed is not None:
+                    return parsed
 
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 * attempt)
@@ -384,6 +428,13 @@ class RecallJudge:
         return None
 
     @staticmethod
+    def _to_int(v) -> Optional[int]:
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
     def _repair_json(text: str) -> Optional[str]:
         """Try to fix common LLM JSON bracket errors (flash models in particular).
 
@@ -395,13 +446,10 @@ class RecallJudge:
         except json.JSONDecodeError:
             pass
 
-        # Count brackets; if ] > [, try removing trailing ] before }
         open_b = text.count("[")
         close_b = text.count("]")
         if close_b > open_b:
             excess = close_b - open_b
-            # Reverse the text, remove up to `excess` ``]`` chars that appear
-            # immediately before the trailing ``}`` (and optional whitespace).
             rev = text[::-1]
             for _ in range(excess):
                 m = re.search(r'(\s*)\]', rev)
@@ -420,8 +468,11 @@ class RecallJudge:
 
     def _parse_response(
         self, content: str, expected_ev: int, expected_results: int
-    ) -> Optional[Tuple[List[List[int]], List[int]]]:
-        """Parse LLM JSON response → (evidence_ranks, result_evidence_counts)."""
+    ) -> Optional[Tuple[List[List[int]], int]]:
+        """Parse LLM JSON response → (evidence_matches, answerable) or None.
+
+        evidence_matches[i] = list of 0-based result indices covering evidence i.
+        """
         m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
         obj = None
         if m:
@@ -446,171 +497,55 @@ class RecallJudge:
             print(f"  [WARN] Unparseable response: {content[:200]}...")
             return None
 
-        # Parse evidence_ranks: list of lists of ints
-        ev_raw = obj.get("evidence_ranks")
-        if not isinstance(ev_raw, list):
-            # Fallback to old evidence_first_ranks format
-            ev_raw = obj.get("evidence_first_ranks", [])
-            if isinstance(ev_raw, list) and ev_raw and isinstance(ev_raw[0], (int, float)):
-                # Convert [3, 0, 1] → [[3], [], [1]]
-                ev_raw = [[int(r)] if int(r) > 0 else [] for r in ev_raw]
+        matches_raw = obj.get("evidence_matches")
+        if not isinstance(matches_raw, list):
+            print(f"  [WARN] Missing/invalid evidence_matches: {repr(matches_raw)[:120]}")
+            return None
 
-        evidence_ranks: List[List[int]] = []
-        if isinstance(ev_raw, list):
-            for entry in ev_raw:
-                if isinstance(entry, list):
-                    ranks = sorted(set(int(r) for r in entry if int(r) > 0))
-                elif isinstance(entry, (int, float)):
-                    v = int(entry)
-                    ranks = [v] if v > 0 else []
-                else:
-                    ranks = []
-                evidence_ranks.append(ranks)
+        evidence_matches: List[List[int]] = []
+        for entry in matches_raw:
+            idxs: List[int] = []
+            if isinstance(entry, list):
+                for v in entry:
+                    n = self._to_int(v)
+                    if n is None:
+                        continue
+                    # prompt uses 1-based numbering; convert to 0-based
+                    idx = n - 1
+                    if 0 <= idx < expected_results:
+                        idxs.append(idx)
+                seen = set()
+                deduped = []
+                for i in idxs:
+                    if i not in seen:
+                        seen.add(i)
+                        deduped.append(i)
+                idxs = deduped
+            evidence_matches.append(idxs)
 
-        # Pad or truncate
-        while len(evidence_ranks) < expected_ev:
-            evidence_ranks.append([])
-        evidence_ranks = evidence_ranks[:expected_ev]
+        while len(evidence_matches) < expected_ev:
+            evidence_matches.append([])
+        evidence_matches = evidence_matches[:expected_ev]
 
-        # Always derive result_evidence_counts from evidence_ranks.
-        # LLMs sometimes make off-by-one errors in the redundant
-        # result_evidence_counts field; evidence_ranks is the
-        # authoritative signal.
-        result_counts = [0] * expected_results
-        for ranks in evidence_ranks:
-            for r in ranks:
-                if 1 <= r <= expected_results:
-                    result_counts[r - 1] += 1
+        answerable = self._parse_answerable(obj.get("answerable"), content)
+        return evidence_matches, answerable
 
-        return evidence_ranks, result_counts
-
-    async def judge_quality(
-        self,
-        question: str,
-        reference_answer: str,
-        evidence_items: List[dict],
-        search_results: List[dict],
-        max_rank: int,
-    ) -> Optional[Tuple[int, List[int]]]:
-        """Returns (min_sufficient_rank, supporting_ranks) or None on failure."""
-        result_count = min(len(search_results), max_rank)
-        if result_count == 0:
-            return 0, []
-
-        results_text = "\n".join(
-            _fmt_search_result(r, i) for i, r in enumerate(search_results[:max_rank])
-        )
-
-        user_prompt = QUALITY_USER_TEMPLATE.format(
-            question=question,
-            reference_answer=reference_answer,
-            result_count=result_count,
-            results_text=results_text,
-        )
-
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": QUALITY_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self.temperature,
-        }
-
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                session = await self._get_session()
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status >= 500:
-                        raise aiohttp.ClientResponseError(
-                            resp.request_info, resp.history, status=resp.status
-                        )
-                    resp.raise_for_status()
-                    data = await resp.json()
-
-                content = data["choices"][0]["message"]["content"]
-                finish_reason = data["choices"][0].get("finish_reason", "")
-                if finish_reason == "length" and attempt < self.max_retries:
-                    print(f"  [RETRY {attempt}/{self.max_retries}] quality: output truncated (length)")
-                    await asyncio.sleep(2 * attempt)
-                    continue
-
-                result = self._parse_quality_response(content)
-                if result is not None:
-                    return result
-
-                if attempt < self.max_retries:
-                    await asyncio.sleep(2 * attempt)
-                    continue
-
-            except Exception as e:
-                if attempt < self.max_retries:
-                    print(f"  [RETRY {attempt}/{self.max_retries}] quality judge: {type(e).__name__}: {str(e)[:120]}")
-                    await asyncio.sleep(2 * attempt)
-                    continue
-                print(f"  [ERROR] Quality judge failed after {self.max_retries} attempts: {type(e).__name__}: {e}")
-
-        return None
-
-    def _parse_quality_response(self, content: str) -> Optional[Tuple[int, List[int]]]:
-        """Parse quality judge response → (min_sufficient_rank, supporting_ranks) or None."""
-        m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
-        obj = None
+    @staticmethod
+    def _parse_answerable(value, content: str) -> int:
+        """Coerce answerable to 0/1. Lenient about bool/int/str, with regex fallback."""
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, (int, float)):
+            return 1 if int(value) == 1 else 0
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("1", "true", "yes", "是"):
+                return 1
+            return 0
+        m = re.search(r'answerable["\s:]+([01])', content, re.IGNORECASE)
         if m:
-            raw = m.group(1)
-            fixed = self._repair_json(raw)
-            if fixed:
-                try:
-                    obj = json.loads(fixed)
-                except json.JSONDecodeError:
-                    pass
-        if obj is None:
-            start, end = content.find("{"), content.rfind("}")
-            if start != -1 and end > start:
-                raw = content[start: end + 1]
-                fixed = self._repair_json(raw)
-                if fixed:
-                    try:
-                        obj = json.loads(fixed)
-                    except json.JSONDecodeError:
-                        pass
-        if obj is not None:
-            rank = obj.get("min_sufficient_rank")
-            if isinstance(rank, (int, float)):
-                rank = max(0, int(rank))
-            else:
-                rank = None
-            raw = obj.get("supporting_ranks", [])
-            if isinstance(raw, list):
-                supporting = sorted(set(int(r) for r in raw if isinstance(r, (int, float)) and int(r) > 0))
-            else:
-                supporting = []
-            if rank is not None:
-                return rank, supporting
-
-        # JSON parse failed — try regex fallback for min_sufficient_rank
-        rank_match = re.search(
-            r'min_sufficient_rank["\s:]+(\d+)', content, re.IGNORECASE
-        )
-        if rank_match:
-            rank = max(0, int(rank_match.group(1)))
-            # Try to extract supporting_ranks array
-            arr_match = re.search(
-                r'supporting_ranks["\s:]+\[([^\]]*)\]', content, re.IGNORECASE
-            )
-            supporting = []
-            if arr_match:
-                nums = re.findall(r'\d+', arr_match.group(1))
-                supporting = sorted(set(int(n) for n in nums if int(n) > 0))
-            return rank, supporting
-
-        print(f"  [WARN] Unparseable quality response: {repr(content[:300])}")
-        return None
+            return int(m.group(1))
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -619,15 +554,14 @@ class RecallJudge:
 
 async def evaluate_recall(
     results_dir: str,
-    k_values: List[int],
     concurrency: int,
     llm_config: dict,
     resume: bool = True,
     output_path: Optional[str] = None,
-    skip_quality: bool = False,
-) -> Dict[int, float]:
+    clean: bool = False,
+) -> None:
     """
-    Compute recall@K for memory retrieval results.
+    Compute evidence coverage rate + answerability rate for search results.
 
     Supports checkpoint/resume to avoid re-running completed LLM calls.
     """
@@ -659,9 +593,15 @@ async def evaluate_recall(
     if output_path is None:
         output_path = str(Path(results_dir) / "recall_results.json")
 
+    if clean:
+        for p in (checkpoint_path, Path(output_path)):
+            if p.exists():
+                p.unlink()
+                print(f"  [clean] removed {p.name}")
+        resume = False
+
     judge = RecallJudge(llm_config)
     semaphore = asyncio.Semaphore(concurrency)
-    max_k = max(k_values)
 
     items = []
     for sr in search_data:
@@ -670,32 +610,31 @@ async def evaluate_recall(
         if evidence:
             items.append((sr, evidence))
 
-    # Load checkpoint
-    completed: Dict[str, Dict[str, List[int]]] = {}
+    # Load checkpoint (only if format matches)
+    completed: Dict[str, Dict] = {}
     if resume and checkpoint_path.exists():
         with open(checkpoint_path, "r", encoding="utf-8") as f:
             ckpt = json.load(f)
-            if isinstance(ckpt, dict) and "completed" in ckpt:
-                for entry in ckpt["completed"]:
-                    completed[entry["question_id"]] = {
-                        "evidence_ranks": entry.get("evidence_ranks", entry.get("ranks", [])),
-                        "result_counts": entry.get("result_counts", []),
-                        "min_sufficient_rank": entry.get("min_sufficient_rank", -1),
-                        "supporting_ranks": entry.get("supporting_ranks", []),
-                    }
+        if isinstance(ckpt, dict) and ckpt.get("format_version") == CHECKPOINT_FORMAT_VERSION:
+            for entry in ckpt.get("completed", []):
+                completed[entry["question_id"]] = {
+                    "evidence_matches": entry.get("evidence_matches", []),
+                    "answerable": entry.get("answerable", 0),
+                }
             print(f"Resumed {len(completed)} completed from checkpoint")
+        else:
+            print("  [WARN] checkpoint format mismatch/legacy — starting fresh")
 
     pending = [
         (sr, ev) for sr, ev in items
         if sr["question_id"] not in completed
     ]
 
-    print(f"\nEvaluating recall & precision: {len(pending)} pending, {len(completed)} cached")
+    print(f"\nEvaluating coverage / answerability: {len(pending)} pending, {len(completed)} cached")
     print(f"  (skipped {len(search_data) - len(items)} with 0 evidence)")
-    print(f"  Max K: {max_k}, Concurrency: {concurrency}")
+    print(f"  Concurrency: {concurrency}")
 
     pbar = tqdm(total=len(pending), desc="Judging")
-    failures = 0
 
     save_every = max(1, concurrency * 5)
     done_since_save = 0
@@ -710,50 +649,24 @@ async def evaluate_recall(
             search_results = sr.get("results", [])
 
             if not search_results:
-                ev_ranks = [[] for _ in evidence]
-                res_counts = [0] * min(len(search_results), max_k)
-                min_sufficient_rank = -1
-                supporting_ranks = []
+                evidence_matches = [[] for _ in evidence]
+                answerable = 0
             else:
-                recall_task = judge.judge(
+                result = await judge.judge(
                     question=question,
                     reference_answer=answer,
                     evidence_items=evidence,
                     search_results=search_results,
-                    max_rank=max_k,
                 )
-                if skip_quality:
-                    quality_task = asyncio.sleep(0)
+                if result is None:
+                    evidence_matches = [[] for _ in evidence]
+                    answerable = 0
                 else:
-                    quality_task = judge.judge_quality(
-                        question=question,
-                        reference_answer=answer,
-                        evidence_items=evidence,
-                        search_results=search_results,
-                        max_rank=len(search_results),
-                    )
-                recall_result, quality_result = await asyncio.gather(
-                    recall_task, quality_task,
-                )
-                if recall_result is None:
-                    ev_ranks = [[] for _ in evidence]
-                    res_counts = [0] * min(len(search_results), max_k)
-                else:
-                    ev_ranks, res_counts = recall_result
-                if skip_quality:
-                    min_sufficient_rank = -1
-                    supporting_ranks = []
-                elif quality_result is not None:
-                    min_sufficient_rank, supporting_ranks = quality_result
-                else:
-                    min_sufficient_rank = -1
-                    supporting_ranks = []
+                    evidence_matches, answerable = result
 
             completed[qid] = {
-                "evidence_ranks": ev_ranks,
-                "result_counts": res_counts,
-                "min_sufficient_rank": min_sufficient_rank,
-                "supporting_ranks": supporting_ranks,
+                "evidence_matches": evidence_matches,
+                "answerable": answerable,
             }
             pbar.update(1)
 
@@ -762,7 +675,7 @@ async def evaluate_recall(
                 done_since_save += 1
                 if done_since_save >= save_every:
                     _save_checkpoint(checkpoint_path, completed)
-                    _save_partial_results(output_path, items, completed, k_values, max_k)
+                    _save_partial_results(output_path, items, completed)
                     done_since_save = 0
 
     if pending:
@@ -775,78 +688,102 @@ async def evaluate_recall(
     # Final save
     _save_checkpoint(checkpoint_path, completed)
 
-    # Reconstruct ordered results
-    summary = _build_recall_results(items, completed, k_values, max_k)
+    summary = _build_coverage_results(items, completed)
+    per_question = summary["per_question"]
+    n_q = len(per_question)
 
-    se_results = summary["per_question"]
-    all_results: List[Tuple[str, List[List[int]], List[int], int, List[int]]] = [
-        (
-            e["question_id"], e["evidence_ranks"], e["result_evidence_counts"],
-            e["min_sufficient_rank"], e["supporting_ranks"],
-        )
-        for e in se_results
-    ]
-
-    # Compute metrics
     print(f"\n{'=' * 60}")
-    print("Recall & Precision @K Results")
+    print("Coverage / Answerability Results")
     print(f"{'=' * 60}")
 
-    # Compute aggregate & print
-    total_with_evidence = len(all_results)
-    for k in k_values:
-        total_ev = sum(len(r[1]) for r in all_results)
-        first_ranks_all = []
-        for _, ev_ranks, _, _, _ in all_results:
-            first_ranks_all.extend([r[0] if r else 0 for r in ev_ranks])
-        strict_recall_sum = sum(1 for r in first_ranks_all if 1 <= r <= k)
-        strict_recall = strict_recall_sum / total_ev if total_ev else 0.0
+    total_ev = sum(pq["num_evidence"] for pq in per_question)
+    covered_ev = sum(pq["covered_count"] for pq in per_question)
+    # macro-average: mean of per-question coverage rate (robust to evidence imbalance)
+    coverage_rate = sum(pq["coverage_rate"] for pq in per_question) / n_q if n_q else 0.0
+    coverage_rate_micro = covered_ev / total_ev if total_ev else 0.0
 
-        strict_prec_sum = 0.0
-        for _, _, res_counts, _, _ in all_results:
-            strict_prec_sum += sum(1 for c in res_counts[:k] if c > 0)
-        n_q = len(all_results)
-        strict_prec = strict_prec_sum / (k * n_q) if n_q else 0.0
+    answerable_count = sum(1 for pq in per_question if pq["answerable"] == 1)
+    answerable_rate = answerable_count / n_q if n_q else 0.0
 
-        quality_count = sum(
-            1 for _, _, _, min_sr, _ in all_results
-            if min_sr >= 1 and min_sr <= k
-        )
-        quality = quality_count / n_q if n_q else 0.0
+    fully_covered_answerable = sum(
+        1 for pq in per_question
+        if pq["answerable"] == 1 and pq["covered_count"] == pq["num_evidence"]
+    )
+    joint_rate = fully_covered_answerable / n_q if n_q else 0.0
 
-        all_found = sum(
-            1 for _, ev_ranks, _, _, _ in all_results
-            if ev_ranks and all((ev_ranks[i] or [0])[0] >= 1 and (ev_ranks[i] or [0])[0] <= k
-                               for i in range(len(ev_ranks)))
-        )
-        partial_found = sum(
-            1 for _, ev_ranks, _, _, _ in all_results
-            if ev_ranks and any(r and r[0] >= 1 and r[0] <= k for r in ev_ranks)
-        )
+    total_results = sum(pq["num_results"] for pq in per_question)
+    relevant_results = sum(pq["relevant_count"] for pq in per_question)
+    precision = relevant_results / total_results if total_results else 0.0
+    redundancy = 1.0 - precision
+    recall = coverage_rate  # recall == macro-average coverage
+    avg_results = total_results / n_q if n_q else 0.0
+    avg_relevant = relevant_results / n_q if n_q else 0.0
 
-        print(f"  --- Recall@{k:>2d} ---")
-        print(f"    Strict:     {strict_recall:.4f} ({strict_recall*100:.1f}%)")
-        print(f"  --- Precision@{k:>2d} ---")
-        print(f"    Strict:     {strict_prec:.4f} ({strict_prec*100:.1f}%)")
-        print(f"  --- Quality@{k:>2d} ---")
-        print(f"    Answerable: {quality:.4f} ({quality*100:.1f}%)")
-        print(f"  Hit@{k:>2d} (all): {all_found/total_with_evidence:.4f} ({all_found/total_with_evidence*100:.1f}%)")
-        print(f"  Hit@{k:>2d} (any): {partial_found/total_with_evidence:.4f} ({partial_found/total_with_evidence*100:.1f}%)")
-        print()
+    total_tokens = sum(pq["total_tokens"] for pq in per_question)
+    avg_tokens_per_unit = total_tokens / total_results if total_results else 0.0
+    avg_tokens_per_question = total_tokens / n_q if n_q else 0.0
 
-    # Quality@all — across full result set
-    quality_all = sum(
-        1 for _, _, _, min_sr, _ in all_results
-        if min_sr >= 1
-    ) / n_q if n_q else 0.0
-    print(f"  --- Quality@all ---")
-    print(f"    Answerable: {quality_all:.4f} ({quality_all*100:.1f}%)")
+    covered_at_5 = sum(pq["covered_at_5"] for pq in per_question)
+    covered_at_20 = sum(pq["covered_at_20"] for pq in per_question)
+    recall_at_5 = sum(pq["recall_at_5"] for pq in per_question) / n_q if n_q else 0.0
+    recall_at_20 = sum(pq["recall_at_20"] for pq in per_question) / n_q if n_q else 0.0
+
+    relevant_at_5 = sum(pq["relevant_at_5"] for pq in per_question)
+    relevant_at_20 = sum(pq["relevant_at_20"] for pq in per_question)
+    precision_at_5 = sum(pq["precision_at_5"] for pq in per_question) / n_q if n_q else 0.0
+    precision_at_20 = sum(pq["precision_at_20"] for pq in per_question) / n_q if n_q else 0.0
+
+    print(f"  Evidence coverage rate (macro): {coverage_rate:.4f} ({coverage_rate*100:.1f}%)  "
+          f"(mean per-question)")
+    print(f"  Evidence coverage rate (micro): {coverage_rate_micro:.4f} ({coverage_rate_micro*100:.1f}%)  "
+          f"({covered_ev}/{total_ev})")
+    print(f"  Recall (= macro coverage):      {recall:.4f} ({recall*100:.1f}%)")
+    print(f"  Recall@5:                       {recall_at_5:.4f} ({recall_at_5*100:.1f}%)  "
+          f"({covered_at_5}/{total_ev})")
+    print(f"  Recall@20:                      {recall_at_20:.4f} ({recall_at_20*100:.1f}%)  "
+          f"({covered_at_20}/{total_ev})")
+    print(f"  Answerable rate:                {answerable_rate:.4f} ({answerable_rate*100:.1f}%)  "
+          f"({answerable_count}/{n_q})")
+    print(f"  Covered AND answerable:         {joint_rate:.4f} ({joint_rate*100:.1f}%)  "
+          f"({fully_covered_answerable}/{n_q})")
+    print(f"  Precision (result purity):      {precision:.4f} ({precision*100:.1f}%)  "
+          f"({relevant_results}/{total_results} relevant)")
+    print(f"  Precision@5:                    {precision_at_5:.4f} ({precision_at_5*100:.1f}%)  "
+          f"({relevant_at_5}/{min(5, total_results)})")
+    print(f"  Precision@20:                   {precision_at_20:.4f} ({precision_at_20*100:.1f}%)  "
+          f"({relevant_at_20}/{min(20, total_results)})")
+    print(f"  Redundancy:                     {redundancy:.4f} ({redundancy*100:.1f}%)")
+    print(f"  Avg results/question:           {avg_results:.2f}  (avg relevant {avg_relevant:.2f})")
+    print(f"  Avg tokens/memory unit:         {avg_tokens_per_unit:.1f}")
+    print(f"  Avg tokens/question:            {avg_tokens_per_question:.1f}")
     print()
 
+    by_source = summary["by_source"]
+    if by_source:
+        print("  Coverage rate by evidence source:")
+        for src in sorted(by_source):
+            s = by_source[src]
+            print(f"    {src:>12s}: {s['coverage_rate']*100:6.2f}%  ({s['covered']}/{s['total']})")
+
     # Save detailed output
+    summary["coverage_rate"] = coverage_rate
+    summary["coverage_rate_micro"] = coverage_rate_micro
+    summary["recall"] = recall
+    summary["recall_at_5"] = recall_at_5
+    summary["recall_at_20"] = recall_at_20
+    summary["answerable_rate"] = answerable_rate
+    summary["covered_and_answerable_rate"] = joint_rate
+    summary["precision"] = precision
+    summary["precision_at_5"] = precision_at_5
+    summary["precision_at_20"] = precision_at_20
+    summary["redundancy"] = redundancy
+    summary["avg_results_per_question"] = avg_results
+    summary["avg_relevant_per_question"] = avg_relevant
+    summary["avg_tokens_per_memory_unit"] = avg_tokens_per_unit
+    summary["avg_tokens_per_question"] = avg_tokens_per_question
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    print(f"Detailed results saved to: {output_path}")
+    print(f"\nDetailed results saved to: {output_path}")
 
 
 def _save_checkpoint(path: Path, completed: Dict[str, Dict]):
@@ -855,72 +792,120 @@ def _save_checkpoint(path: Path, completed: Dict[str, Dict]):
     entries = [
         {
             "question_id": qid,
-            "evidence_ranks": v.get("evidence_ranks", []),
-            "result_counts": v.get("result_counts", []),
-            "min_sufficient_rank": v.get("min_sufficient_rank", -1),
-            "supporting_ranks": v.get("supporting_ranks", []),
+            "evidence_matches": v.get("evidence_matches", []),
+            "answerable": v.get("answerable", 0),
         }
         for qid, v in completed.items()
     ]
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"completed": entries}, f, ensure_ascii=False)
+        json.dump({"format_version": CHECKPOINT_FORMAT_VERSION, "completed": entries},
+                  f, ensure_ascii=False)
     os.replace(tmp, str(path))
 
 
-def _build_recall_results(
+def _build_coverage_results(
     items: List[tuple],
     completed: Dict[str, Dict],
-    k_values: List[int],
-    max_k: int,
 ) -> dict:
-    """Build recall_results dict from completed judgments. Always includes all items."""
-    all_results: List[Tuple] = []
+    """Build coverage results dict from completed judgments. Always includes all items."""
+    per_question = []
+    by_source: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "covered": 0})
+
     for sr, ev in items:
         qid = sr["question_id"]
+        num_results = len(sr.get("results", []))
         default = {
-            "evidence_ranks": [[] for _ in ev],
-            "result_counts": [0] * max_k,
-            "min_sufficient_rank": -1,
-            "supporting_ranks": [],
+            "evidence_matches": [[] for _ in ev],
+            "answerable": 0,
         }
         entry = completed.get(qid, default)
-        all_results.append((
-            qid, entry["evidence_ranks"], entry["result_counts"],
-            entry.get("min_sufficient_rank", -1),
-            entry.get("supporting_ranks", []),
-        ))
+        evidence_matches = entry.get("evidence_matches", [[] for _ in ev])
+        answerable = entry.get("answerable", 0)
 
-    summary = {"k_values": k_values, "per_question": []}
-    for qid, ev_ranks, res_counts, min_sr, supporting in all_results:
+        # Normalize length (checkpoint corruption safety)
+        if len(evidence_matches) != len(ev):
+            evidence_matches = list(evidence_matches) + [
+                [] for _ in range(max(0, len(ev) - len(evidence_matches)))
+            ]
+            evidence_matches = evidence_matches[: len(ev)]
+
+        # Derive covered + relevant directly from the matching
+        covered: List[int] = []
+        relevant = [0] * num_results
+        for matches in evidence_matches:
+            covered.append(1 if matches else 0)
+            for idx in matches:
+                if isinstance(idx, int) and 0 <= idx < num_results:
+                    relevant[idx] = 1
+
+        covered_count = sum(covered)
+        relevant_count = sum(relevant)
+        sources = [e.get("source", "?") for e in ev]
+        total_tokens = sum(_count_tokens(r.get("content", "")) for r in sr.get("results", []))
+
+        # Recall@K: an evidence is covered only if a match lands in the top-K results
+        covered_at_5 = sum(
+            1 for matches in evidence_matches
+            if any(isinstance(idx, int) and 0 <= idx < 5 for idx in matches)
+        )
+        covered_at_20 = sum(
+            1 for matches in evidence_matches
+            if any(isinstance(idx, int) and 0 <= idx < 20 for idx in matches)
+        )
+
+        # Precision@K: fraction of the top-K results that cover >=1 evidence
+        relevant_at_5 = sum(relevant[:5])
+        relevant_at_20 = sum(relevant[:20])
+
         pq = {
             "question_id": qid,
-            "evidence_ranks": ev_ranks,
-            "result_evidence_counts": res_counts,
-            "min_sufficient_rank": min_sr,
-            "supporting_ranks": supporting,
+            "num_evidence": len(ev),
+            "covered_count": covered_count,
+            "coverage_rate": covered_count / len(ev) if ev else 0.0,
+            "covered": covered,
+            "evidence_matches": evidence_matches,
+            "sources": sources,
+            "answerable": answerable,
+            "num_results": num_results,
+            "relevant_count": relevant_count,
+            "precision": relevant_count / num_results if num_results else 0.0,
+            "total_tokens": total_tokens,
+            "avg_tokens_per_unit": total_tokens / num_results if num_results else 0.0,
+            "covered_at_5": covered_at_5,
+            "covered_at_20": covered_at_20,
+            "recall_at_5": covered_at_5 / len(ev) if ev else 0.0,
+            "recall_at_20": covered_at_20 / len(ev) if ev else 0.0,
+            "relevant_at_5": relevant_at_5,
+            "relevant_at_20": relevant_at_20,
+            "precision_at_5": relevant_at_5 / min(5, num_results) if num_results else 0.0,
+            "precision_at_20": relevant_at_20 / min(20, num_results) if num_results else 0.0,
         }
-        for k in k_values:
-            first_ranks = [r[0] if r else 0 for r in ev_ranks]
-            found = sum(1 for r in first_ranks if 1 <= r <= k)
-            pq[f"strict_recall@{k}"] = found / len(ev_ranks) if ev_ranks else 0.0
-            relevant_in_k = sum(1 for c in res_counts[:k] if c > 0)
-            pq[f"strict_precision@{k}"] = relevant_in_k / k
-            pq[f"quality@{k}"] = 1 if (min_sr >= 1 and min_sr <= k) else 0
-        pq["quality@all"] = 1 if min_sr >= 1 else 0
-        summary["per_question"].append(pq)
+        per_question.append(pq)
 
-    return summary
+        for src, cov in zip(sources, covered):
+            by_source[src]["total"] += 1
+            if cov == 1:
+                by_source[src]["covered"] += 1
+
+    by_source_out = {
+        src: {
+            "total": s["total"],
+            "covered": s["covered"],
+            "coverage_rate": s["covered"] / s["total"] if s["total"] else 0.0,
+        }
+        for src, s in by_source.items()
+    }
+
+    return {"per_question": per_question, "by_source": by_source_out}
 
 
 def _save_partial_results(
     output_path: str,
     items: List[tuple],
     completed: Dict[str, Dict],
-    k_values: List[int],
-    max_k: int = 20,
 ):
     """Write current recall_results.json from completed work so far."""
-    summary = _build_recall_results(items, completed, k_values, max_k)
+    summary = _build_coverage_results(items, completed)
     tmp = output_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -932,14 +917,10 @@ def _save_partial_results(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Recall@K evaluation for LifeBench")
+    parser = argparse.ArgumentParser(description="Coverage + answerability evaluation for LifeBench")
     parser.add_argument(
         "--results-dir", required=True,
         help="Path to results directory containing search_results.json"
-    )
-    parser.add_argument(
-        "--k-values", default="5,10,15,20",
-        help="Comma-separated K values (default: 5,10,15,20)"
     )
     parser.add_argument(
         "--concurrency", type=int, default=15,
@@ -950,16 +931,17 @@ def main():
         help="Ignore checkpoint and start fresh"
     )
     parser.add_argument(
+        "--clean", action="store_true",
+        help="Delete existing recall_checkpoint.json and recall_results.json first, "
+             "then run from scratch"
+    )
+    parser.add_argument(
         "--output", default=None,
         help="Path to save detailed per-question results JSON"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be evaluated without calling LLM"
-    )
-    parser.add_argument(
-        "--no-quality", action="store_true",
-        help="Skip retrieval quality (answerability) judge"
     )
     parser.add_argument(
         "--env-file", default=None,
@@ -972,8 +954,6 @@ def main():
     env_path = args.env_file or str(base / ".env")
     load_dotenv(env_path)
 
-    k_values = [int(k.strip()) for k in args.k_values.split(",")]
-
     llm_config = {
         "model": "deepseek-v4-pro",
         "api_key": os.getenv("LLM_API_KEY", ""),
@@ -982,13 +962,11 @@ def main():
         "temperature": float(os.getenv("LLM_TEMPERATURE", "0.0")),
     }
 
-    print(f"Recall evaluator starting:")
+    print(f"Coverage evaluator starting:")
     print(f"  Results dir: {args.results_dir}")
-    print(f"  K values: {k_values}")
     print(f"  LLM: {llm_config['model']} @ {llm_config['base_url']}")
     print(f"  Concurrency: {args.concurrency}")
     print(f"  Resume: {not args.no_resume}")
-    print(f"  Quality: {'disabled' if args.no_quality else 'enabled'}")
     if args.dry_run:
         print(f"  DRY RUN - no LLM calls")
     print()
@@ -1007,17 +985,16 @@ def main():
         print(f"  With evidence: {with_evidence}")
         print(f"  Without evidence (skipped): {without_evidence}")
         print(f"  Total evidence items: {total_evidence}")
-        print(f"  Estimated LLM calls: {with_evidence} (recall) + {0 if args.no_quality else with_evidence} (quality)")
+        print(f"  Estimated LLM calls: {with_evidence} (one combined judge call per question)")
         return
 
     asyncio.run(evaluate_recall(
         results_dir=args.results_dir,
-        k_values=k_values,
         concurrency=args.concurrency,
         llm_config=llm_config,
         resume=not args.no_resume,
         output_path=args.output,
-        skip_quality=args.no_quality,
+        clean=args.clean,
     ))
 
 

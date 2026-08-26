@@ -15,21 +15,34 @@ docker_wait: 120
 
 # Neo4j connection (used by adapter) - use existing container
 neo4j_uri: "bolt://localhost:7687"
+neo4j_http_uri: "http://localhost:7474"
 neo4j_user: "neo4j"
 neo4j_password: "password"
+neo4j_database: "neo4j"
 
 # LLM Proxy for token tracking (optional).
 # When set, all LLM chat-completion traffic is routed through the proxy
 # so token usage can be counted. Embedding and rerank traffic bypass the proxy.
-# llm_proxy_url: "http://localhost:18443/v1"  # disabled — proxy can't handle high concurrency
+llm_proxy_url: "http://localhost:18443/v1"
 
 # LLM settings for fact extraction and answer generation
+# api_key accepts:
+#   - single string: "${LLM_API_KEY}"
+#   - comma-separated: "sk-key1,sk-key2,sk-key3"
+#   - YAML list for multi-key load distribution:
+#       api_key:
+#         - "sk-key1"
+#         - "sk-key2"
+#         - "sk-key3"
+#   Each key handles ~1/N of concurrent traffic; conversations are pinned
+#   to a key by hashing group_id, so a session always uses the same key.
 llm:
   model: "${LLM_MODEL:deepseek-v4-flash}"
-  api_key: "${LLM_API_KEY}"
+  api_key:
+    - "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL:https://api.deepseek.com/v1}"
   temperature: 0
-  max_tokens: 65536
+  max_tokens: 131072
 
 # Embedder settings — reads VECTORIZE_* env vars directly in adapter
 embedder:
@@ -48,16 +61,19 @@ rerank:
   model: "${RERANK_MODEL}"
 
 # Concurrency: max simultaneous coroutines during ingestion and search.
-# Overrides the SEMAPHORE_LIMIT env var (default 20). Edge dedup is the
-# primary bottleneck (1 LLM call per edge), so higher concurrency directly
-# reduces wall-clock time. 15 gives good throughput for typical API limits.
+# Overrides the SEMAPHORE_LIMIT env var (default 30). With 4 API keys
+# distributing load, peak per-key concurrency is low even at 20 here.
 max_coroutines: 20
 
 # Batch size: how many messages to concatenate into one add_episode() call.
 # Larger batches = fewer episodes = fewer extraction calls = fewer redundant
 # edges (LLM sees full context). Set high enough to fit a whole session in
 # 1 episode, capped for very long sessions.
-batch_size: 15
+batch_size: 16
+
+# Combined extraction: single LLM call per episode extracts both nodes
+# and edges, halving the front-end LLM calls per ingest cycle.
+use_combined_extraction: true
 
 # Search settings
 search:

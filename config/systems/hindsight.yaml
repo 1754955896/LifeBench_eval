@@ -23,21 +23,21 @@ llm_proxy_url: "http://localhost:18443"
 memory_llm_provider: "deepseek"
 memory_llm_api_key: "${LLM_API_KEY}"
 memory_llm_model: "deepseek-v4-flash"
-memory_llm_base_url: "https://api.deepseek.com"
+memory_llm_base_url: "http://localhost:18443"
 
 # Answer LLM (for generating answers from retrieved context)
 # Falls back to memory_llm_* if not specified
 answer_llm_provider: "deepseek"
 answer_llm_api_key: "${LLM_API_KEY}"
 answer_llm_model: "deepseek-v4-flash"
-answer_llm_base_url: "https://api.deepseek.com"
+answer_llm_base_url: "http://localhost:18443"
 
 # Legacy LLM config (still used for answer generation if answer_llm_* not set)
 llm:
   provider: "deepseek"
   model: "deepseek-v4-flash"
   api_key: "${LLM_API_KEY}"
-  base_url: "https://api.deepseek.com"
+  base_url: "http://localhost:18443"
   temperature: 0
   max_tokens: 32768
 

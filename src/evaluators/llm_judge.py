@@ -147,6 +147,9 @@ class LLMJudge(BaseEvaluator):
             raise ValueError("evaluation.num_runs must be at least 1")
         if self.num_runs % 2 == 0:
             raise ValueError("evaluation.num_runs must be odd for majority vote")
+        self.max_retries = int(config.get("max_retries", 3))
+        if self.max_retries < 1:
+            raise ValueError("evaluation.max_retries must be at least 1")
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -308,7 +311,11 @@ class LLMJudge(BaseEvaluator):
         ask_time: str,
         score_points: List[dict],
     ) -> dict:
-        """One judge call -> {is_correct, point_hits, reasoning}."""
+        """One judge call -> {is_correct, point_hits, reasoning}.
+
+        Retries the LLM call when it returns an empty response, unparseable
+        output, or a bad label (transient judge failures).
+        """
         user_prompt = USER_PROMPT_TEMPLATE.format(
             question=question,
             ask_time=ask_time,
@@ -332,48 +339,75 @@ class LLMJudge(BaseEvaluator):
             "temperature": 0,
         }
 
-        try:
-            session = await self._get_session()
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status >= 500:
-                    raise aiohttp.ClientResponseError(
-                        resp.request_info, resp.history, status=resp.status
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                session = await self._get_session()
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status >= 500:
+                        raise aiohttp.ClientResponseError(
+                            resp.request_info, resp.history, status=resp.status
+                        )
+                    resp.raise_for_status()
+                    data = await resp.json()
+
+                if isinstance(data, dict) and "choices" in data:
+                    content = data["choices"][0]["message"]["content"]
+                else:
+                    content = str(data)
+
+                if not content:
+                    print(
+                        f"  ⚠️ LLM Judge: empty response "
+                        f"(attempt {attempt}/{self.max_retries})"
                     )
-                resp.raise_for_status()
-                data = await resp.json()
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(1.0 * attempt)
+                        continue
+                    return {"is_correct": False, "point_hits": [], "reasoning": "empty response"}
 
-            if isinstance(data, dict) and "choices" in data:
-                content = data["choices"][0]["message"]["content"]
-            else:
-                content = str(data)
+                obj = self._parse_robust(content)
+                if obj is None:
+                    print(
+                        f"  ⚠️ LLM Judge: unparseable "
+                        f"(attempt {attempt}/{self.max_retries}); raw: {content[:160]}..."
+                    )
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(1.0 * attempt)
+                        continue
+                    return {"is_correct": False, "point_hits": [], "reasoning": "unparseable"}
 
-            if not content:
-                print(f"  ⚠️ LLM Judge: empty response")
-                return {"is_correct": False, "point_hits": [], "reasoning": "empty response"}
+                label = str(obj.get("label", "")).strip().upper()
+                if label not in ("CORRECT", "WRONG"):
+                    print(
+                        f"  ⚠️ LLM Judge: bad/empty label "
+                        f"(attempt {attempt}/{self.max_retries}); raw: {content[:160]}..."
+                    )
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(1.0 * attempt)
+                        continue
+                    return {"is_correct": False, "point_hits": [], "reasoning": "bad label"}
 
-            obj = self._parse_robust(content)
-            if obj is None:
-                print(f"  ⚠️ LLM Judge: unparseable; raw: {content[:160]}...")
-                return {"is_correct": False, "point_hits": [], "reasoning": "unparseable"}
+                point_hits = obj.get("point_hits", [])
+                if not isinstance(point_hits, list):
+                    point_hits = []
 
-            label = str(obj.get("label", "")).strip().upper()
-            if label not in ("CORRECT", "WRONG"):
-                print(f"  ⚠️ LLM Judge: bad/empty label; raw: {content[:160]}...")
-                return {"is_correct": False, "point_hits": [], "reasoning": "bad label"}
+                return {
+                    "is_correct": label == "CORRECT",
+                    "point_hits": point_hits,
+                    "reasoning": str(obj.get("reasoning", "")),
+                }
 
-            point_hits = obj.get("point_hits", [])
-            if not isinstance(point_hits, list):
-                point_hits = []
+            except Exception as e:
+                print(
+                    f"  ⚠️ LLM Judge failed (attempt {attempt}/{self.max_retries}): "
+                    f"{type(e).__name__}: {e}"
+                )
+                if attempt < self.max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return {"is_correct": False, "point_hits": [], "reasoning": str(e)}
 
-            return {
-                "is_correct": label == "CORRECT",
-                "point_hits": point_hits,
-                "reasoning": str(obj.get("reasoning", "")),
-            }
-
-        except Exception as e:
-            print(f"  ⚠️ LLM Judge failed: {type(e).__name__}: {e}")
-            return {"is_correct": False, "point_hits": [], "reasoning": str(e)}
+        return {"is_correct": False, "point_hits": [], "reasoning": "retries exhausted"}
 
     def _parse_robust(self, content: str):
         """Parse the judge response into {label, point_hits, reasoning}."""

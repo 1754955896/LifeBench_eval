@@ -6,8 +6,10 @@ Extends DefaultTracker with Neo4j knowledge-graph metrics:
 - Edge count (EntityEdge) via Cypher
 - Neo4j database store size on disk (via docker exec du or HTTP API)
 """
+import base64
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -37,12 +39,30 @@ class GraphitiTracker(DefaultTracker):
         llm_proxy_url: Optional[str] = None,
     ):
         super().__init__(config, pid, llm_proxy_url)
-        self._config = config or {}
-        self._neo4j_http = "http://localhost:7474"
-        self._neo4j_user = config.get("neo4j_user", "neo4j") if config else "neo4j"
-        self._neo4j_password = config.get("neo4j_password", "password") if config else "password"
-        self._compose_file = config.get("docker_compose") if config else None
+        cfg = config or {}
+        self._config = cfg
+        self._neo4j_user = cfg.get("neo4j_user", "neo4j")
+        self._neo4j_password = cfg.get("neo4j_password", "password")
+        self._neo4j_database = cfg.get("neo4j_database", "neo4j")
+        self._neo4j_http = self._resolve_http_uri(cfg)
+        self._compose_file = cfg.get("docker_compose")
         self._compose_dir: Optional[Path] = None
+
+    @staticmethod
+    def _resolve_http_uri(cfg: dict) -> str:
+        """Resolve the Neo4j HTTP base URL.
+
+        Preference order: explicit ``neo4j_http_uri`` → derived from
+        ``neo4j_uri`` (bolt://host:7687 → http://host:7474) → localhost default.
+        """
+        http_uri = cfg.get("neo4j_http_uri")
+        if http_uri:
+            return str(http_uri).rstrip("/")
+        bolt = cfg.get("neo4j_uri", "bolt://localhost:7687")
+        if bolt.startswith("bolt://"):
+            host = bolt[len("bolt://"):].rsplit(":", 1)[0]
+            return f"http://{host}:7474"
+        return "http://localhost:7474"
 
     @property
     def system_name(self) -> str:
@@ -73,22 +93,21 @@ class GraphitiTracker(DefaultTracker):
 
     def _cypher_query(self, statement: str) -> Optional[list]:
         """Run a Cypher query against Neo4j HTTP API, return rows as list of dicts."""
-        url = f"{self._neo4j_http}/db/neo4j/tx/commit"
-        credentials = f"{self._neo4j_user}:{self._neo4j_password}"
-        auth = urllib.request.HTTPBasicAuthHandler()
-        auth.add_password(
-            realm="Neo4j", uri=self._neo4j_http,
-            user=self._neo4j_user, passwd=self._neo4j_password
-        )
+        url = f"{self._neo4j_http}/db/{self._neo4j_database}/tx/commit"
+        token = base64.b64encode(
+            f"{self._neo4j_user}:{self._neo4j_password}".encode()
+        ).decode()
 
         try:
             payload = json.dumps({"statements": [{"statement": statement}]}).encode()
             req = urllib.request.Request(
                 url, data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Basic {token}",
+                },
             )
-            opener = urllib.request.build_opener(auth)
-            with opener.open(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
             if data.get("errors"):
                 logger.debug("Cypher query error: %s", data["errors"])
@@ -108,12 +127,12 @@ class GraphitiTracker(DefaultTracker):
     def _get_neo4j_node_counts(self) -> Dict[str, int]:
         """Get node counts per label from Neo4j."""
         rows = self._cypher_query(
-            "MATCH (n) RETURN DISTINCT labels(n) AS label, count(n) AS cnt"
+            "MATCH (n) UNWIND labels(n) AS label RETURN label, count(*) AS cnt"
         )
         if not rows:
             return {}
         return {
-            ", ".join(r.get("label", [])): r.get("cnt", 0)
+            r.get("label"): r.get("cnt", 0)
             for r in rows
             if r.get("label")
         }
@@ -138,7 +157,7 @@ class GraphitiTracker(DefaultTracker):
                     [
                         "docker", "compose", "-f", str(compose_path),
                         "exec", "-T", "neo4j",
-                        "du", "-sm", "/data/databases/neo4j",
+                        "du", "-sm", f"/data/databases/{self._neo4j_database}",
                     ],
                     capture_output=True, text=True, timeout=10,
                 )
@@ -151,6 +170,26 @@ class GraphitiTracker(DefaultTracker):
         return 0.0
 
     # -- container stats ---------------------------------------------------
+
+    @staticmethod
+    def _parse_mem_mb(mem_usage: str) -> float:
+        """Parse a docker-stats MemUsage string (e.g. '3.022GiB / 7.69GiB') into MB."""
+        if not mem_usage:
+            return 0.0
+        token = mem_usage.split("/")[0].strip()
+        m = re.match(r"([\d.]+)\s*([KMGT]?i?B)", token, re.IGNORECASE)
+        if not m:
+            return 0.0
+        value = float(m.group(1))
+        unit = m.group(2).lower()
+        factors = {
+            "b": 1 / (1024 * 1024),
+            "kb": 1 / 1024, "kib": 1 / 1024,
+            "mb": 1.0, "mib": 1.0,
+            "gb": 1024.0, "gib": 1024.0,
+            "tb": 1024 * 1024, "tib": 1024 * 1024,
+        }
+        return value * factors.get(unit, 0.0)
 
     def _get_container_stats(self) -> Dict[str, Any]:
         """Get CPU/memory for the Neo4j container."""
@@ -185,11 +224,13 @@ class GraphitiTracker(DefaultTracker):
                         continue
                     name = parts[0]
                     cpu = parts[1].rstrip("%")
+                    mem_usage = parts[2]
                     mem_perc = parts[3].rstrip("%")
                     stats[name] = {
                         "container": name,
                         "cpu_percent": float(cpu) if cpu else 0.0,
-                        "mem_usage": parts[2],
+                        "mem_usage": mem_usage,
+                        "mem_usage_mb": self._parse_mem_mb(mem_usage),
                         "mem_percent": float(mem_perc) if mem_perc else 0.0,
                     }
                 except (ValueError, subprocess.TimeoutExpired):
@@ -224,11 +265,19 @@ class GraphitiTracker(DefaultTracker):
             total_cpu = sum(
                 c.get("cpu_percent", 0.0) for c in container_stats.values()
             )
-            total_mem = sum(
+            total_mem_mb = sum(
+                c.get("mem_usage_mb", 0.0) for c in container_stats.values()
+            )
+            total_mem_percent = sum(
                 c.get("mem_percent", 0.0) for c in container_stats.values()
             )
             snapshot.extra["total_container_cpu_percent"] = round(total_cpu, 2)
-            snapshot.extra["total_container_mem_percent"] = round(total_mem, 2)
+            snapshot.extra["total_container_mem_percent"] = round(total_mem_percent, 2)
+            # Fill the standard SystemSnapshot container fields so the
+            # GlobalMonitor timeline carries container CPU/memory (previously
+            # these stayed at their 0.0 defaults).
+            snapshot.container_cpu_percent = round(total_cpu, 2)
+            snapshot.container_memory_rss_mb = round(total_mem_mb, 2)
 
         return snapshot
 

@@ -76,15 +76,70 @@ def _truncate(text: str, max_len: int = 200) -> str:
     return text[: max_len - 3] + "..."
 
 
-def format_evidence(ev: Dict, index: int) -> str:
-    """Format a single evidence item into a compact 2-5 line representation."""
+def _turn_key(key: str) -> tuple:
+    """Sort key for turn labels ('turn 2' before 'turn 10')."""
+    m = re.search(r"\d+", key or "")
+    return (int(m.group()) if m else 0, str(key))
+
+
+def _join_list(v) -> str:
+    """Render a list/tuple as comma-joined text, else the raw string."""
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x) for x in v)
+    return str(v or "")
+
+
+def _location_str(loc) -> str:
+    """Render a location dict as a full address (province → poi), best-effort."""
+    if isinstance(loc, dict):
+        parts = []
+        for k in ("province", "city", "district", "streetName", "streetNumber", "poi"):
+            val = str(loc.get(k) or "").strip()
+            if val:
+                parts.append(val)
+        return " ".join(parts)
+    return str(loc) if loc else ""
+
+
+def _iter_agent_turns(conv: dict) -> list:
+    """Return ordered ``(label, user, assistant)`` turn tuples.
+
+    Flattens the malformed case (seen in the raw data) where a turn dict
+    nests another ``turn N`` inside itself, so no turn content is dropped.
+    """
+    out: List[Tuple[str, dict, dict]] = []
+
+    def visit(d: dict) -> None:
+        for tk in sorted(d.keys(), key=_turn_key):
+            tv = d[tk]
+            if not isinstance(tv, dict):
+                continue
+            out.append((tk, tv.get("user", {}) or {}, tv.get("assistant", {}) or {}))
+            nested = {
+                k: v for k, v in tv.items()
+                if k not in ("user", "assistant") and isinstance(v, dict)
+            }
+            for nk in sorted(nested.keys(), key=_turn_key):
+                visit({nk: nested[nk]})
+
+    visit(conv)
+    return out
+
+
+def format_evidence(ev: Dict, index: int, include_assistant: bool = False) -> str:
+    """Format a single evidence item into a compact multi-line representation.
+
+    Every content-bearing field of ``raw_data`` is surfaced; only internal
+    linkage ids (``daily_event_id`` / ``event_id`` / ``phone_id``) are omitted.
+    """
     raw = ev.get("raw_data", {})
     rtype = raw.get("type", ev.get("source", "unknown"))
     src = ev.get("source", "unknown")
     date = ev.get("session_date", "")
 
     if rtype == "call":
-        direction = "incoming" if raw.get("direction") == 0 else "outgoing"
+        _dir_map = {0: "incoming", 1: "outgoing", 2: "missed"}
+        direction = _dir_map.get(raw.get("direction"), raw.get("direction"))
         has_content = raw.get("call_result", "") not in ("", "接通", "未接通")
         tag = "" if has_content else " [METADATA_ONLY]"
         return (
@@ -96,39 +151,54 @@ def format_evidence(ev: Dict, index: int) -> str:
 
     elif rtype == "sms":
         content = _truncate(raw.get("message_content", ""), 250)
+        mt = raw.get("message_type", "")
+        if mt == "发送":
+            direction = "outgoing"
+        elif mt == "接收":
+            direction = "incoming"
+        else:
+            direction = mt or "?"
         return (
-            f"[E{index}] sms | {date} | {raw.get('contactName', '?')} "
-            f"({raw.get('phoneNumber', '')}) | {content}"
+            f"[E{index}] sms | {date} | {direction} | {raw.get('contactName', '?')} "
+            f"({raw.get('phoneNumber', '')}) | {raw.get('datetime', '')} | {content}"
         )
 
     elif rtype == "agent_chat":
-        conv = raw.get("conversation", {})
-        user_msgs = []
-        for tk in sorted(conv.keys()):
-            tv = conv[tk]
-            user = tv.get("user", {})
-            content = _truncate(user.get("content", ""), 400)
-            action = user.get("action", "")
-            if content:
-                user_msgs.append(f"  [{tk}] user({action}): {content}")
-        header = f"[E{index}] agent_chat | {date} | {len(conv)} turns"
-        if not user_msgs:
+        conv = raw.get("conversation", {}) or {}
+        turns = _iter_agent_turns(conv)
+        lines = []
+        for tk, user, assistant in turns:
+            user_content = _truncate(user.get("content", ""), 600)
+            user_action = user.get("action", "")
+            user_explain = (user.get("explain", "") or "").strip()
+            if user_content:
+                lines.append(f"  [{tk}] user({user_action}): {user_content}")
+            if user_explain:
+                lines.append(f"  [{tk}] user_explain: {_truncate(user_explain, 200)}")
+            if include_assistant:
+                assistant_content = _truncate(assistant.get("content", ""), 600)
+                assistant_action = assistant.get("action", "")
+                if assistant_content:
+                    lines.append(f"  [{tk}] assistant({assistant_action}): {assistant_content}")
+        header_date = raw.get("date") or date
+        header = f"[E{index}] agent_chat | {header_date} | {len(turns)} turns"
+        if not lines:
             return header + " | (no user content)"
-        return header + "\n" + "\n".join(user_msgs)
+        return header + "\n" + "\n".join(lines)
 
     elif rtype == "calendar":
-        desc = _truncate(raw.get("description", ""), 250)
+        desc = _truncate(raw.get("description", ""), 500)
         return (
             f"[E{index}] calendar | {date} | title={raw.get('title', '')} | "
             f"time={raw.get('start_time', '')} → {raw.get('end_time', '')} | "
-            f"desc={desc}"
+            f"datetime={raw.get('datetime', '')} | desc={desc}"
         )
 
     elif rtype == "note":
-        content = _truncate(raw.get("content", ""), 250)
+        content = _truncate(raw.get("content", ""), 1000)
         return (
-            f"[E{index}] note | {date} | title={raw.get('title', '')} | "
-            f"content={content}"
+            f"[E{index}] note | {date} | {raw.get('datetime', '')} | "
+            f"title={raw.get('title', '')} | content={content}"
         )
 
     elif rtype == "push":
@@ -136,21 +206,39 @@ def format_evidence(ev: Dict, index: int) -> str:
         has_factual = bool(raw.get("title", "") or raw.get("content", ""))
         tag = "" if has_factual else " [METADATA_ONLY]"
         return (
-            f"[E{index}] push{tag} | {date} | app={raw.get('source', '')} | "
-            f"title={raw.get('title', '')} | content={content}"
+            f"[E{index}] push{tag} | {date} | {raw.get('datetime', '')} | "
+            f"app={raw.get('source', '')} | title={raw.get('title', '')} | "
+            f"content={content} | status={raw.get('push_status', '')} | "
+            f"jump_path={raw.get('jump_path', '')}"
         )
 
     elif rtype == "photo":
         caption = _truncate(raw.get("caption", ""), 200)
-        loc = raw.get("location", {})
-        if isinstance(loc, dict):
-            loc_str = loc.get("poi", loc.get("streetName", ""))
-        else:
-            loc_str = str(loc) if loc else ""
-        return (
-            f"[E{index}] photo | {date} | {raw.get('datetime', '')} | "
-            f"location={loc_str} | caption={caption}"
-        )
+        loc_str = _location_str(raw.get("location", {}))
+        fields = [
+            f"[E{index}] photo | {date} | {raw.get('datetime', '')}",
+            f"location={loc_str}",
+        ]
+        title = (raw.get("title", "") or "").strip()
+        face = _join_list(raw.get("faceRecognition", ""))
+        tags = _join_list(raw.get("imageTag", []))
+        ocr = (raw.get("ocrText", "") or "").strip()
+        shoot = (raw.get("shoot_mode", "") or "").strip()
+        size = (raw.get("image_size", "") or "").strip()
+        if title:
+            fields.append(f"title={title}")
+        if face:
+            fields.append(f"faces={face}")
+        if tags:
+            fields.append(f"tags={tags}")
+        if ocr and ocr != "无":
+            fields.append(f"ocr={_truncate(ocr, 200)}")
+        if shoot:
+            fields.append(f"shoot_mode={shoot}")
+        if size:
+            fields.append(f"size={size}")
+        fields.append(f"caption={caption}")
+        return " | ".join(fields)
 
     elif rtype == "chat":
         msgs = raw.get("chat_message", [])
@@ -181,11 +269,7 @@ def format_evidence(ev: Dict, index: int) -> str:
         )
 
     elif rtype == "location":
-        loc = raw.get("location", {})
-        if isinstance(loc, dict):
-            loc_str = loc.get("poi", str(loc))
-        else:
-            loc_str = str(loc)
+        loc_str = _location_str(raw.get("location", {}))
         return f"[E{index}] location | {date} | {loc_str}"
 
     elif rtype == "screen":
@@ -208,15 +292,17 @@ def format_evidence(ev: Dict, index: int) -> str:
 
 SYSTEM_PROMPT = """You are an evidence quality auditor for a long-term memory QA dataset. Each question comes with multiple evidence items from a person's digital footprint (calls, messages, calendar, notes, photos, AI chat, etc.).
 
-Your job: evaluate each evidence item and decide whether to KEEP or REMOVE it. The goal is to keep ONLY evidence that helps answer the question while removing noise.
+Your job: evaluate each evidence item and decide whether to KEEP or REMOVE it. The goal is to remove ONLY clearly useless noise while preserving every item that could help answer the question.
+
+**GUIDING PRINCIPLE — when in doubt, KEEP.** Removing an answer-bearing item makes the question unanswerable (unrecoverable); keeping a noisy item only adds a minor distraction. So err on the side of keeping: remove only when you are confident the item is irrelevant or fully redundant.
 
 **CRITERIA to REMOVE (any one is sufficient):**
 
 1. IRRELEVANT: Contains no information that helps answer the question.
    - Items about different people, dates, or topics unrelated to the question
    - Photos of unrelated scenes (flowers, food, landscapes with no connection)
-2. REDUNDANT: Duplicates facts already in another KEPT item. Keep only the most detailed/informative source.
-3. NO CONTENT: Items marked [METADATA_ONLY] or [NO_USER_CONTENT] — there's no factual info to extract.
+2. REDUNDANT: The item's facts are entirely covered by another KEPT item AND it adds no extra information. If it carries any additional detail (a different date, person, number, or event), it is NOT redundant — keep it.
+3. NO CONTENT: Items with literally no usable info (empty body, no metadata worth extracting). Note that [METADATA_ONLY] on a call still carries contact/time/duration — treat that metadata as factual, don't auto-remove.
 4. WRONG CONTEXT: The date or context clearly doesn't match what the question asks about.
 
 **CRITERIA to KEEP (all should apply):**
@@ -231,12 +317,12 @@ Your job: evaluate each evidence item and decide whether to KEEP or REMOVE it. T
 - **calendar**: HIGH signal — structured event info. Keep if event topic matches the question.
 - **photo**: Keep only if caption, faceRecognition, location, or datetime answers the question. Remove generic/unrelated photos.
 - **sms**: Keep if message content mentions names, events, or facts relevant to the question.
-- **agent_chat**: Only USER messages are shown (assistant is stripped). Evaluate user messages for factual relevance. Remove if user is just seeking advice about future plans.
-- **call**: Metadata-only (contact name, time, duration). Remove unless the contact name AND date are directly required to answer the question.
-- **push**: System notifications (payment, transport card, app alerts). Almost always remove — they rarely contain evidence-quality information.
+- **agent_chat**: Both USER and assistant messages are shown. The assistant's replies often contain the actual answer (advice, plans, facts the user asked about), so treat them as evidence too. Remove only if the whole conversation is unrelated to the question.
+- **call**: Metadata-only, but that metadata (contact, time, duration, direction) is itself a valid fact and can be the answer. Keep if the contact, time, or duration is relevant to the question; remove only if clearly unrelated.
+- **push**: System notifications (payment, transport card, app alerts). Often noise, but their title/content/amount can be the answer. Keep if the title/content matches the question; remove only if clearly unrelated.
 
 **IMPORTANT:**
-- Prefer fewer, higher-quality items. One note often beats three redundant sources.
+- When in doubt, KEEP. Prefer completeness over minimalism — a slightly noisy kept set is far less harmful than a wrongly removed answer.
 - For Unanswerable questions, it's OK to mark all as REMOVE if truly no evidence relates to the question.
 - Verify the KEPT set can answer the question. If items are complementary, keep both.
 - Never remove ALL items for Answerable questions — keep the most relevant one.
@@ -262,7 +348,9 @@ def _evidence_content_score(ev: Dict) -> int:
         conv = raw.get("conversation", {})
         score = 0
         for tk in conv:
-            score += len(conv[tk].get("user", {}).get("content", ""))
+            turn = conv[tk] or {}
+            score += len((turn.get("user") or {}).get("content", ""))
+            score += len((turn.get("assistant") or {}).get("content", ""))
         return score
     elif rtype == "sms":
         return len(raw.get("message_content", ""))
@@ -352,9 +440,9 @@ async def evaluate_evidence(
     if not evidence_items:
         return []
 
-    # Format evidence
+    # Format evidence — include assistant turns (they often hold the answer)
     evidence_texts = [
-        format_evidence(ev, i) for i, ev in enumerate(evidence_items)
+        format_evidence(ev, i, include_assistant=True) for i, ev in enumerate(evidence_items)
     ]
     user_prompt = build_user_prompt(
         question, answer, question_types, ask_time, evidence_texts

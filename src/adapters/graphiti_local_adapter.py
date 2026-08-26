@@ -783,9 +783,9 @@ class GraphitiLocalAdapter(BaseAdapter):
         sorted memories with date prefixes (mirroring mem0 adapter). Falls
         back to the pre-formatted ``context`` string otherwise.
         """
-        api_key = self.llm_config.get("api_key", "")
-        base_url = self.llm_config.get("base_url", "https://api.deepseek.com/v1")
-        model = self.llm_config.get("model", "deepseek-chat")
+        api_key = self._resolve_api_key("LLM")
+        base_url = self._resolve_base_url("LLM")
+        model = self.llm_config.get("model", os.environ.get("LLM_MODEL", "deepseek-chat"))
         temperature = self.llm_config.get("temperature", 0)
         max_tokens = self.llm_config.get("max_tokens", 32768)
 

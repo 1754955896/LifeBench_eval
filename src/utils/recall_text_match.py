@@ -69,7 +69,7 @@ def extract_candidates(ev: dict) -> List[str]:
         for turn in conv.values():
             if isinstance(turn, dict):
                 u = turn.get("user", {}) or {}
-                a = turn.get("agent", {}) or {}
+                a = turn.get("assistant", {}) or {}
                 if u.get("content"):
                     parts.append(u["content"])
                 if a.get("content"):

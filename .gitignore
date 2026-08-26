@@ -21,6 +21,7 @@ env/
 .vscode/
 *.swp
 *.swo
+.claude/
 
 # Output & results
 output/
@@ -49,6 +50,9 @@ config/systems/graphrag.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# Docs
+docs/
 
 systems/*/.env
 systems/*/*.log
