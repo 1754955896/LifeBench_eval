@@ -331,7 +331,7 @@ class RecallJudge:
     """Calls LLM to judge evidence coverage + answerability in one pass."""
 
     def __init__(self, config: dict):
-        self.model = "deepseek-v4-pro"
+        self.model = config.get("model", "deepseek-v4-pro")
         self.api_key = config.get("api_key", "")
         self.base_url = config.get("base_url", "https://api.deepseek.com")
         self.max_tokens = config.get("max_tokens", 4096)
@@ -955,7 +955,7 @@ def main():
     load_dotenv(env_path)
 
     llm_config = {
-        "model": "deepseek-v4-pro",
+        "model": os.getenv("LLM_MODEL", "deepseek-v4-pro"),
         "api_key": os.getenv("LLM_API_KEY", ""),
         "base_url": os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "4096")),
