@@ -146,19 +146,40 @@ def _fmt_evidence(ev: dict, index: int) -> str:
     elif source == "call":
         contact = raw.get("contactName", "")
         phone = raw.get("phoneNumber", "")
-        duration = raw.get("durationSeconds", "")
+        direction = raw.get("direction", "")
+        result = raw.get("call_result", "")
         dt = raw.get("datetime", "")
+        dt_end = raw.get("datetime_end", "")
         parts.append(f"   联系人: {contact} ({phone})")
-        parts.append(f"   通话时长: {duration}秒")
+        if direction != "":
+            dir_map = {0: "呼入", 1: "呼出", 2: "未接", "0": "呼入", "1": "呼出", "2": "未接"}
+            parts.append(f"   方向: {dir_map.get(direction, direction)}")
+        if result:
+            parts.append(f"   结果: {result}")
         if dt:
-            parts.append(f"   时间: {dt}")
+            parts.append(f"   时间: {dt}" + (f" ~ {dt_end}" if dt_end else ""))
 
     elif source == "photo":
-        desc = raw.get("description", "")
+        caption = raw.get("caption", "")
+        title = raw.get("title", "")
+        faces = raw.get("faceRecognition", "")
+        tags = raw.get("imageTag", [])
+        ocr = raw.get("ocrText", "")
         location = raw.get("location", "")
         dt = raw.get("datetime", "")
-        if desc:
-            parts.append(f"   描述: {desc}")
+        if caption:
+            parts.append(f"   描述: {caption}")
+        if title:
+            parts.append(f"   标题: {title}")
+        if faces and faces != "无":
+            parts.append(f"   人物: {faces}")
+        if tags:
+            if isinstance(tags, list):
+                parts.append(f"   标签: {', '.join(str(t) for t in tags)}")
+            else:
+                parts.append(f"   标签: {tags}")
+        if ocr and ocr != "无":
+            parts.append(f"   文字: {ocr}")
         if location:
             parts.append(f"   地点: {location}")
         if dt:
@@ -167,9 +188,12 @@ def _fmt_evidence(ev: dict, index: int) -> str:
     elif source == "push":
         title = raw.get("title", "")
         content = raw.get("content", "")
+        app = raw.get("source", "")
         dt = raw.get("datetime", "")
         parts.append(f"   标题: {title}")
         parts.append(f"   内容: {content}")
+        if app:
+            parts.append(f"   来源: {app}")
         if dt:
             parts.append(f"   时间: {dt}")
 
@@ -342,7 +366,8 @@ class RecallJudge:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             conn = aiohttp.TCPConnector(limit=100)
-            self._session = aiohttp.ClientSession(connector=conn)
+            timeout = aiohttp.ClientTimeout(total=360)
+            self._session = aiohttp.ClientSession(connector=conn, timeout=timeout)
         return self._session
 
     async def close(self):
@@ -954,12 +979,13 @@ def main():
     env_path = args.env_file or str(base / ".env")
     load_dotenv(env_path)
 
+    # Recall judge 使用专用的 RECALL_JUDGE_* 字段，未设置时回退到共享的 LLM_*。
     llm_config = {
-        "model": os.getenv("LLM_MODEL", "deepseek-v4-pro"),
-        "api_key": os.getenv("LLM_API_KEY", ""),
-        "base_url": os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
-        "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "4096")),
-        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.0")),
+        "model": os.getenv("RECALL_JUDGE_MODEL") or os.getenv("LLM_MODEL", "deepseek-v4-pro"),
+        "api_key": os.getenv("RECALL_JUDGE_API_KEY") or os.getenv("LLM_API_KEY", ""),
+        "base_url": os.getenv("RECALL_JUDGE_BASE_URL") or os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
+        "max_tokens": int(os.getenv("RECALL_JUDGE_MAX_TOKENS") or os.getenv("LLM_MAX_TOKENS", "4096")),
+        "temperature": float(os.getenv("RECALL_JUDGE_TEMPERATURE") or os.getenv("LLM_TEMPERATURE", "0.0")),
     }
 
     print(f"Coverage evaluator starting:")

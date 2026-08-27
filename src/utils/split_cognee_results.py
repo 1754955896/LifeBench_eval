@@ -6,6 +6,10 @@ the full knowledge graph text with Node markers. This script splits each
 Node into its own result item so that recall@K evaluation can produce
 meaningful per-rank metrics.
 
+The split is lossless: nodes and edges both become ``results`` items (nodes
+first, then edges tagged ``metadata.kind == "edge"``), and the top-level
+``retrieval_metadata`` field is carried over unchanged.
+
 Usage:
     cd LifeBench_eval
     python src/utils/split_cognee_results.py \\
@@ -23,7 +27,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 def split_node_content(raw_content: str) -> List[str]:
@@ -84,11 +88,51 @@ def split_node_content(raw_content: str) -> List[str]:
     return nodes
 
 
+def split_graph_content(raw_content: str) -> Tuple[List[str], List[str]]:
+    """Split a cognee graph text into (node_strings, edge_strings).
+
+    Cognee's GRAPH_COMPLETION context has two sections::
+
+        Nodes:
+        Node: <title>
+        __node_content_start__
+        <body>
+        __node_content_end__
+        ...
+        Connections:
+        <source> --[<relation>]--> <target>  (<description>)
+        ...
+
+    Returns the per-node strings (title + body) and the raw connection lines.
+    Keeping the connections (rather than dropping them as a node-only split
+    does) preserves the graph's edge/relationship information.
+    """
+    text = raw_content.replace("\r\n", "\n").replace("\r", "\n")
+
+    node_part = text
+    conn_part = ""
+    m = re.search(r"\nConnections:\n", text)
+    if m:
+        node_part = text[: m.start()]
+        conn_part = text[m.end():]
+
+    nodes = split_node_content(node_part)
+    edges = [ln.strip() for ln in conn_part.split("\n") if ln.strip()]
+    return nodes, edges
+
+
 def split_results(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Transform search_results: split each entry's graph nodes into individual results."""
+    """Transform search_results: split each entry's graph nodes into individual results.
+
+    Nodes and edges both become result items (nodes first, then edges), so a
+    consumer that reads ``results`` sees the full graph context. Edge items are
+    tagged ``metadata.kind == "edge"``; the top-level ``retrieval_metadata``
+    field is carried over unchanged.
+    """
     transformed = []
     total_before = 0
     total_after = 0
+    total_edges = 0
 
     for sr in data:
         results = sr.get("results", [])
@@ -97,27 +141,42 @@ def split_results(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         new_results = []
         for r in results:
             content = r.get("content", "")
+            score = r.get("score", 0)
+            base_meta = dict(r.get("metadata", {}) or {})
             if "Node:" in content and "__node_content_start__" in content:
-                nodes = split_node_content(content)
+                nodes, edges = split_graph_content(content)
                 for node_text in nodes:
                     new_results.append({
                         "content": node_text,
-                        "score": r.get("score", 0),
-                        "metadata": dict(r.get("metadata", {}) or {}),
+                        "score": score,
+                        "metadata": dict(base_meta),
                     })
+                for edge in edges:
+                    new_results.append({
+                        "content": edge,
+                        "score": score,
+                        "metadata": {**base_meta, "kind": "edge"},
+                    })
+                    total_edges += 1
             else:
                 # Keep as-is (no graph markers)
                 new_results.append(r)
 
         total_after += len(new_results)
-        transformed.append({
+
+        entry = {
             "question_id": sr["question_id"],
             "query": sr.get("query", ""),
             "conversation_id": sr.get("conversation_id", ""),
             "results": new_results,
-        })
+        }
+        if "retrieval_metadata" in sr:
+            entry["retrieval_metadata"] = sr["retrieval_metadata"]
+
+        transformed.append(entry)
 
     print(f"Results: {total_before} → {total_after} (avg {total_after/len(data):.1f} per question)")
+    print(f"Edges folded into results: {total_edges}")
     return transformed
 
 
