@@ -122,3 +122,29 @@ hindsight 系列的 `-8b/-14b/-32b/-qwen3.8MAX/-glm5.2` 后缀即是对 hindsigh
   - 两者解压到同一目录即可还原完整 `lifebench-cognee/`
 
 压缩为**无损**（zip DEFLATE），解压后与原文件逐字节一致。
+
+### 解压还原
+
+所有归档都内嵌了顶层目录名（`<目录名>/<文件>`），把全部 `.zip` 解压到 `results_clean/` 即自动还原原始目录结构；cognee 的两个包解压到同一位置会自动合并回完整的 `lifebench-cognee/`。
+
+在**项目根目录**（`LifeBench_eval/`）下，任选一种方式：
+
+**方式一：Python（跨平台，推荐，本仓库环境必装）**
+
+```bash
+python -c "import zipfile, glob; [zipfile.ZipFile(f).extractall('results_clean') for f in glob.glob('results_clean/*.zip')]"
+```
+
+**方式二：Git Bash / Linux / macOS（`unzip`）**
+
+```bash
+cd results_clean && unzip -o '*.zip' && cd ..
+```
+
+**方式三：Windows PowerShell（`Expand-Archive`）**
+
+```powershell
+Get-ChildItem results_clean\*.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath results_clean -Force }
+```
+
+解压完成后，`results_clean/<目录名>/` 会重新出现（这些子目录仍被 `.gitignore` 忽略，不会进入版本控制）。
