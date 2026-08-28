@@ -26,6 +26,7 @@ env/
 # Output & results
 output/
 results/
+results_clean/*/
 .cognee/
 
 

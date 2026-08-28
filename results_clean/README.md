@@ -1,0 +1,124 @@
+# results_clean/ 评测结果目录说明
+
+本目录存放 LifeBench 记忆评测的**清洗后最终结果**，每个子目录对应一次独立实验。
+
+结果目录已做清理：删除了 `.bak` 备份、`report.txt`、中间产物 `*_fix.json` / `*_fixed.json` / `recall_checkpoint*.json`，只保留最终（含修复后）的成果文件。
+
+## 命名约定
+
+目录名格式：`lifebench[-_]<变体>-<系统>[-<模型>]`
+
+| 组成 | 含义 | 取值 |
+|---|---|---|
+| 数据集 | LifeBench 记忆评测基准 | `lifebench`（标准）/ `lifebench_offline`（离线变体） |
+| 系统 | 被测记忆系统 | `cognee` / `graphiti_local` / `hindsight` / `mem0` / `direct_evidence` |
+| 模型 | 系统内的模型变体（消融） | `8b` / `14b` / `32b` / `qwen3.8MAX` / `glm5.2`（仅 hindsight 系列） |
+
+示例：
+
+- `lifebench-hindsight-8b` = LifeBench 数据集 × hindsight 系统 × 8b 模型变体
+- `lifebench_offline-hindsight` = 离线数据集 × hindsight 系统
+
+## 各实验目录
+
+### lifebench-direct_evidence
+- **系统**：直接证据基线（Direct Evidence）
+- **说明**：不经过任何检索系统，直接把该问题的 golden 证据拼进 prompt 交给 LLM 作答，作为**上界参考**（upper bound）。因此只有 `answer_results.json` 与 `eval_results.json`，没有检索 / 召回 / 时延文件。
+
+### lifebench-cognee
+- **系统**：cognee（图记忆系统）
+- **检索**：`retriever_type = graph_completion`
+
+### lifebench-graphiti_local
+- **系统**：graphiti 本地图记忆系统
+- **检索**：分层检索 `layers = {entity, edge, episode}`
+
+### lifebench-mem0
+- **系统**：mem0（`mode = oss`）
+
+### lifebench-hindsight
+- **系统**：hindsight 记忆系统（默认配置）
+
+### lifebench-hindsight-{8b,14b,32b,qwen3.8MAX,glm5.2}
+- **系统**：hindsight
+- **模型变体**：后缀表示不同的模型配置，用于模型消融对比。
+
+### lifebench_offline-hindsight
+- **数据集**：离线（offline）数据集变体
+- **系统**：hindsight
+
+## 文件说明
+
+每个实验目录内文件命名统一，含义如下：
+
+| 文件 | 含义 |
+|---|---|
+| `search_results.json` | 检索结果：每个问题从记忆系统检索到的上下文（context），含 `retrieval_metadata`（adapter、total_results 等） |
+| `answer_results.json` | 问答结果：基于检索上下文生成的 `answer`、`golden_answer`、题目元信息（`question_type`、`score_points`、`conversation_id` 等） |
+| `eval_results.json` | 问答评测：LLM judge 对答案打分（`accuracy`、`weighted_score`），metadata 含 judge 模型与修复信息 |
+| `recall_results.json` | 召回评测：证据覆盖率 / 可回答性 / 精确率（`recall`、`recall@k`、`precision`、`answerable_rate` 等） |
+| `add_latency.json` | 写入时延：每个 session 导入记忆系统的耗时（`latency_seconds`） |
+| `search_latency.json` | 检索时延：每个问题的检索耗时（`latency_seconds`） |
+| `checkpoint_default.json` | 流水线阶段检查点（`run_name`、`completed_stages` 等） |
+
+### 各文件详细说明
+
+**`search_results.json`**（列表，3380 条）
+
+每个问题一条检索记录，字段：`question_id` / `query` / `conversation_id` / `results`（检索到的 top-k 上下文）/ `retrieval_metadata`（`adapter`、`total_results`、系统特有字段如 cognee 的 `retriever_type`、graphiti 的 `layers`、hindsight 的 `budget`/`entities`、mem0 的 `mode`）。
+
+**`answer_results.json`**（列表，3380 条）
+
+每个问题一条问答记录，字段：`question_id` / `question` / `answer`（生成答案）/ `golden_answer` / `category` / `conversation_id` / `formatted_context` / `metadata`（`ask_time`、`question_type`、`score_points` 等）。
+
+**`eval_results.json`**（对象）
+
+- 顶层：`total_questions` / `correct` / `accuracy` / `weighted_score` / `detailed_results` / `metadata`
+- `metadata`：judge 模型 `deepseek-v4-flash`，`num_runs=3` + `aggregation=majority_vote`（三次判定取多数），以及 `fix_info` / `rejudged` 字段——记录了对 judge 空响应失败题的修复情况（修复后 accuracy 更高）。
+
+**`recall_results.json`**（对象）
+
+- 顶层标量指标：`recall`（= macro coverage）、`recall_at_5` / `recall_at_20`、`precision` / `precision_at_5` / `precision_at_20`、`answerable_rate`、`covered_and_answerable_rate`、`coverage_rate_micro`、`redundancy`、`avg_results_per_question`、`avg_tokens_per_*` 等
+- `per_question`：每问题明细（2795 个有证据映射的问题）
+- `by_source`：按证据来源（sms/note/calendar/photo/call/push/agent_chat）分组的覆盖率
+- `rejudge_metadata`：召回 judge（`glm-5.2`）失败题的修复统计（targeted/recovered/still_failed）
+
+**`add_latency.json`**（列表，约 3650 条 session）
+
+字段：`date` / `session_id` / `num_chunks` / `num_messages` / `latency_seconds` / `added` / `failed` / `metadata`。
+
+**`search_latency.json`**（列表，3380 条）
+
+字段：`question_id` / `conversation_id` / `latency_seconds`。
+
+**`checkpoint_default.json`**（对象）
+
+流水线执行进度，字段：`run_name` / `completed_stages` / `answered_qa_ids` / `sample_add_completed` / `sample_search_completed` / `date_add_completed` / `date_search_completed` / `last_updated`。
+
+## 共享模型配置（全局，非目录内区分项）
+
+这些配置在所有实验目录中一致，由 `.env` / `config/systems/*.yaml` 统一控制，不作为目录名区分项：
+
+| 用途 | 模型 |
+|---|---|
+| 答案生成 LLM（answer LLM） | `deepseek-v4-flash` |
+| 问答评测 judge | `deepseek-v4-flash` |
+| 召回评测 judge（recall judge） | `glm-5.2` |
+| 默认向量化（embedding） | `Qwen/Qwen3-Embedding-4B` |
+| 默认重排（reranker） | `Qwen/Qwen3-Reranker-4B` |
+
+hindsight 系列的 `-8b/-14b/-32b/-qwen3.8MAX/-glm5.2` 后缀即是对 hindsight 系统内模型（embedding / 检索模型）的消融变体。
+
+## 压缩归档说明
+
+原始数据子目录（`results_clean/*/`）体积过大（单个 `search_results.json` 可达 400+ MB，超过 GitHub 100 MB 单文件上限），故已整体 gzip/zip 压缩成 `.zip` 归档后提交，原始子目录在 `.gitignore` 中被忽略（`results_clean/*/`）。
+
+归档文件与本 README 同级，命名规则：
+
+- 每个实验一个 `.zip`：`<目录名>.zip`（解压后还原为 `results_clean/<目录名>/`）
+- `lifebench-cognee` 因体积最大，拆成两个包：
+  - `lifebench-cognee_search_results.zip`（仅 `search_results.json`）
+  - `lifebench-cognee_rest.zip`（其余文件）
+  - 两者解压到同一目录即可还原完整 `lifebench-cognee/`
+
+压缩为**无损**（zip DEFLATE），解压后与原文件逐字节一致。
