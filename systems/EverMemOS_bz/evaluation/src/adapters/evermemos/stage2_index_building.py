@@ -195,6 +195,13 @@ async def build_emb_index(config: ExperimentConfig, data_dir: Path, emb_save_dir
             print(f"Warning: File not found, skipping: {file_path}")
             continue
 
+        # 存在性检查: 已构建过的 conv 跳过, 避免重复向量化
+        # (build_emb_index 遍历所有文件, 之前任何 conv 触发构建都会全量重做)
+        output_path = emb_save_dir / f"embedding_index_conv_{i}.pkl"
+        if output_path.exists():
+            print(f"Embedding index already exists for conv {i}, skipping...")
+            continue
+
         print(f"\n{'='*60}")
         print(f"Processing {file_path.name} for embedding...")
         print(f"{'='*60}")

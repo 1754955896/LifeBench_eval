@@ -110,10 +110,11 @@ class OpenAIProvider(LLMProvider):
             data["extra_body"] = extra_body
 
         # Check if thinking should be disabled (for models that support it)
+        # 阿里云 qwen3 系列用 enable_thinking:false（thinking:{"type":"disabled"} 会 400）
         if self._disable_thinking:
             data.setdefault("extra_body", {})
-            if "thinking" not in data["extra_body"]:
-                data["extra_body"]["thinking"] = {"type": "disabled"}
+            if "enable_thinking" not in data["extra_body"]:
+                data["extra_body"]["enable_thinking"] = False
         # print(data)
         # print(data["extra_body"])
         # Add max_tokens if specified
@@ -143,9 +144,12 @@ class OpenAIProvider(LLMProvider):
                         # print(response_data)
                         # 处理错误响应
                         if response.status != 200:
-                            error_msg = response_data.get('error', {}).get(
-                                'message', f"HTTP {response.status}"
-                            )
+                            # 代理返回的 error 可能是字符串（非 dict），加固解析
+                            err = response_data.get('error', {}) if isinstance(response_data, dict) else {}
+                            if isinstance(err, dict):
+                                error_msg = err.get('message', f"HTTP {response.status}")
+                            else:
+                                error_msg = str(err) or f"HTTP {response.status}"
                             logger.error(
                                 f"❌ [OpenAI-{self.model}] HTTP错误 {response.status}:"
                             )
@@ -188,7 +192,7 @@ class OpenAIProvider(LLMProvider):
                             f"[OpenAI-{self.model}] 耗时: {end_time - start_time:.2f}s"
                         )
                         # 如果耗时太长
-                        if end_time - start_time > 60:
+                        if end_time - start_time > 180:
                             logger.warning(
                                 f"[OpenAI-{self.model}] 耗时太长: {end_time - start_time:.2f}s"
                             )

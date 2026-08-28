@@ -113,9 +113,11 @@ class EverMemOSNativeAdapter(BaseAdapter):
         )
 
         # Initialize Event Log Extractor
+        # use_eval_prompts=False: 走生产 prompt(受 MEMORY_LANGUAGE 控制),
+        # 与 HTTP 版一致, 中文数据输出中文事件日志
         self.event_log_extractor = EventLogExtractor(
             llm_provider=self.llm_provider,
-            use_eval_prompts=True,
+            use_eval_prompts=False,
         )
 
         # Ensure NLTK data is available
@@ -139,6 +141,28 @@ class EverMemOSNativeAdapter(BaseAdapter):
         self._conv_id_to_index: Dict[str, int] = {}
         self._next_conv_index = 0
 
+        # 续跑场景: 从 conv_index_map.json 恢复 conv_id → index 映射,
+        # 保证与已落盘的 memcell_list_conv_N.json 等文件对应, 避免重跑提取
+        if self.output_dir:
+            map_file = self.output_dir / "conv_index_map.json"
+            if map_file.exists():
+                try:
+                    saved = json.loads(map_file.read_text(encoding="utf-8"))
+                    self._conv_id_to_index = {k: int(v) for k, v in saved.items()}
+                    self._next_conv_index = max(self._conv_id_to_index.values()) + 1 if self._conv_id_to_index else 0
+                    print(f"   📂 Loaded conv index map: {len(self._conv_id_to_index)} conversations")
+                except Exception as e:
+                    print(f"   ⚠️ Failed to load conv index map: {e}")
+
+        # Per-conversation build lock: the runner searches all final-date QAs
+        # concurrently, which would otherwise trigger N duplicate index builds
+        # (each re-running the full Stage 1 extraction).
+        self._conv_build_locks: Dict[str, asyncio.Lock] = {}
+
+        # Loaded index cache (bm25/embedding pkl): avoids re-loading ~310MB per
+        # search, which blows up memory under concurrent searches.
+        self._index_cache: Dict[str, Any] = {}
+
         # Store config for later use
         self._config = config
 
@@ -155,11 +179,33 @@ class EverMemOSNativeAdapter(BaseAdapter):
         if conv_id not in self._conv_id_to_index:
             self._conv_id_to_index[conv_id] = self._next_conv_index
             self._next_conv_index += 1
+            self._save_conv_index_map()
         return self._conv_id_to_index[conv_id]
+
+    def _save_conv_index_map(self) -> None:
+        """Persist conv_id → index mapping for resume-safe restarts."""
+        if not self.output_dir:
+            return
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            map_file = self.output_dir / "conv_index_map.json"
+            map_file.write_text(
+                json.dumps(self._conv_id_to_index, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"   ⚠️ Failed to save conv index map: {e}")
 
     def _get_conv_numeric_index(self, conv_id: str) -> int:
         """Get the numeric index for an existing conversation ID."""
         return self._conv_id_to_index.get(conv_id, -1)
+
+    def _load_index_file(self, path: str, cache_key: str) -> Any:
+        """Load a pickle index file, caching it to avoid repeated 310MB loads."""
+        if cache_key not in self._index_cache:
+            with open(path, "rb") as f:
+                self._index_cache[cache_key] = pickle.load(f)
+        return self._index_cache[cache_key]
 
     def _convert_config_to_experiment_config(self) -> ExperimentConfig:
         """Convert YAML config to ExperimentConfig."""
@@ -287,6 +333,19 @@ class EverMemOSNativeAdapter(BaseAdapter):
 
         return False
 
+    async def _build_index_locked(self, conv_id: str) -> Dict[str, Any]:
+        """Build index under a per-conversation lock.
+
+        The runner searches all final-date QAs concurrently; without the lock
+        each search would trigger a duplicate full Stage 1 extraction.
+        """
+        lock = self._conv_build_locks.setdefault(conv_id, asyncio.Lock())
+        async with lock:
+            buf = self._get_conv_buffer(conv_id)
+            if buf["index_built"]:
+                return buf["index_metadata"]
+            return await self._build_index_for_conv(conv_id)
+
     def _is_final_qa(self, ask_time: str) -> bool:
         """Check if this QA belongs to the final date.
 
@@ -318,31 +377,39 @@ class EverMemOSNativeAdapter(BaseAdapter):
         emb_index_dir.mkdir(parents=True, exist_ok=True)
 
         raw_data = buf["messages"]
-        if not raw_data:
-            return {}
-
-        print(f"\n{'='*60}")
-        print(f"Stage 1: MemCell Extraction (conv: {conv_id})")
-        print(f"{'='*60}")
 
         exp_config = self._convert_config_to_experiment_config()
 
         # Get numeric index for this conversation
         # EverMemOS expects files named conv_0, conv_1, conv_2, etc.
         numeric_index = self._get_numeric_index(conv_id)
-        print(f"  Processing conversation: {conv_id} (numeric_index: {numeric_index})")
 
-        memcells = await stage1_memcells_extraction.process_single_conversation(
-            conv_id=str(numeric_index),
-            conversation=raw_data,
-            save_dir=str(memcells_dir),
-            llm_provider=self.llm_provider,
-            event_log_extractor=self.event_log_extractor,
-            progress_counter=None,
-            progress=None,
-            task_id=None,
-            config=exp_config,
-        )
+        memcell_file = memcells_dir / f"memcell_list_conv_{numeric_index}.json"
+        if memcell_file.exists():
+            # 续跑场景: memcells 已完整落盘, 直接复用; 缓冲区在续跑时可能不全,
+            # 若重跑 Stage 1 会用不完整消息覆盖完整索引
+            print(f"\n📂 MemCell list already exists ({memcell_file.name}), "
+                  f"skipping Stage 1 extraction (reusing persisted memcells)")
+            memcells = []
+        elif not raw_data:
+            return {}
+        else:
+            print(f"\n{'='*60}")
+            print(f"Stage 1: MemCell Extraction (conv: {conv_id})")
+            print(f"{'='*60}")
+            print(f"  Processing conversation: {conv_id} (numeric_index: {numeric_index})")
+
+            memcells = await stage1_memcells_extraction.process_single_conversation(
+                conv_id=str(numeric_index),
+                conversation=raw_data,
+                save_dir=str(memcells_dir),
+                llm_provider=self.llm_provider,
+                event_log_extractor=self.event_log_extractor,
+                progress_counter=None,
+                progress=None,
+                task_id=None,
+                config=exp_config,
+            )
 
         print(f"\n{'='*60}")
         print(f"Stage 2: Index Building (conv: {conv_id}, index: {numeric_index})")
@@ -388,7 +455,7 @@ class EverMemOSNativeAdapter(BaseAdapter):
         }
 
         print(f"\n✅ Index built for conv {conv_id}")
-        print(f"   MemCells: {len(memcells) if memcells else 0}")
+        print(f"   MemCells: {len(memcells) if memcells else 'reused from file'}")
 
         buf["index_built"] = True
         return buf["index_metadata"]
@@ -460,7 +527,7 @@ class EverMemOSNativeAdapter(BaseAdapter):
             if self.buffer_mode and self._is_final_date(chunk):
                 print(f"\n🎯 Conversation {conv_id} reached final date ({self.final_date}), building index...")
                 try:
-                    await self._build_index_for_conv(conv_id)
+                    await self._build_index_locked(conv_id)
                     # Execute buffered searches for this conversation
                     buf = self._get_conv_buffer(conv_id)
                     if buf["searches"]:
@@ -476,7 +543,7 @@ class EverMemOSNativeAdapter(BaseAdapter):
         # If buffering is disabled, build all indexes immediately
         if not self.buffer_mode:
             for conv_id in self._conv_buffers:
-                await self._build_index_for_conv(conv_id)
+                await self._build_index_locked(conv_id)
             return {}
 
         # Check if this was the last call (force build all)
@@ -485,7 +552,7 @@ class EverMemOSNativeAdapter(BaseAdapter):
                 buf = self._get_conv_buffer(conv_id)
                 if not buf["index_built"]:
                     print(f"\n🔨 Last call - building index for conv {conv_id}...")
-                    await self._build_index_for_conv(conv_id)
+                    await self._build_index_locked(conv_id)
                     await self._execute_buffered_searches_for_conv(conv_id)
             return {}
 
@@ -583,7 +650,7 @@ class EverMemOSNativeAdapter(BaseAdapter):
         if not buf["index_built"]:
             print(f"   Building index...")
             try:
-                await self._build_index_for_conv(conversation_id)
+                await self._build_index_locked(conversation_id)
             except Exception as e:
                 print(f"   ERROR building index: {e}")
                 import traceback
@@ -677,7 +744,8 @@ class EverMemOSNativeAdapter(BaseAdapter):
                 retrieval_metadata={"error": f"No numeric index for conv_id: {conversation_id}"},
             )
 
-        # Load BM25 index using numeric index
+        # Load BM25 index using numeric index (cached: 每次搜索重新加载 310MB+
+        # embedding pkl 在并发搜索时会内存爆炸)
         bm25_file = bm25_index_dir / f"bm25_index_conv_{numeric_index}.pkl"
         if not bm25_file.exists():
             return SearchResult(
@@ -688,19 +756,16 @@ class EverMemOSNativeAdapter(BaseAdapter):
                 retrieval_metadata={"error": f"BM25 index not found: {bm25_file.name}"},
             )
 
-        with open(bm25_file, "rb") as f:
-            bm25_index_data = pickle.load(f)
-
+        bm25_index_data = self._load_index_file(str(bm25_file), f"bm25_{numeric_index}")
         bm25 = bm25_index_data.get("bm25")
         docs = bm25_index_data.get("docs")
 
-        # Load Embedding index using numeric index
+        # Load Embedding index using numeric index (cached)
         emb_index = None
         if index.get("use_hybrid_search"):
             emb_file = emb_index_dir / f"embedding_index_conv_{numeric_index}.pkl"
             if emb_file.exists():
-                with open(emb_file, "rb") as f:
-                    emb_index = pickle.load(f)
+                emb_index = self._load_index_file(str(emb_file), f"emb_{numeric_index}")
 
         # Get config
         exp_config = self._convert_config_to_experiment_config()

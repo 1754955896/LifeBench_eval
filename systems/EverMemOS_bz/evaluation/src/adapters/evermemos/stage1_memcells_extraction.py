@@ -162,7 +162,7 @@ async def memcell_extraction_from_conversation(
 ) -> list:
 
     episode_extractor = EpisodeMemoryExtractor(
-        llm_provider=llm_provider, use_eval_prompts=True
+        llm_provider=llm_provider, use_eval_prompts=False
     )
     memcell_list = []
     speakers = {
@@ -304,7 +304,7 @@ async def process_single_conversation(
         # Create MemCellExtractor
         raw_data_list = convert_conversation_to_raw_data_list(conversation)
         memcell_extractor = ConvMemCellExtractor(
-            llm_provider=llm_provider, use_eval_prompts=True
+            llm_provider=llm_provider, use_eval_prompts=False
         )
 
         # Conditional creation: Cluster manager (per-conversation)
@@ -413,8 +413,8 @@ async def process_single_conversation(
 
             # Concurrent extraction of all event logs (using Semaphore to control concurrency)
             sem = asyncio.Semaphore(
-                20
-            )  # Limit concurrency to 20 (avoid API rate limits)
+                8
+            )  # Limit concurrency to 8 (20 并发 × 10 conv = 200 流会触发 dashscope 限流, 反而更慢)
 
             async def extract_with_semaphore(idx, memcell):
                 async with sem:
@@ -637,11 +637,11 @@ async def main():
         max_tokens=config.llm_config[llm_service]["max_tokens"],
     )
 
-    # 创建共享的 Event Log Extractor（使用评估专用提示词）
+    # 创建共享的 Event Log Extractor（与 HTTP 版一致：生产提示词，受 MEMORY_LANGUAGE 控制）
     console.print("⚙️ 初始化 Event Log Extractor...", style="yellow")
     shared_event_log_extractor = EventLogExtractor(
         llm_provider=shared_llm_provider,
-        use_eval_prompts=True,  # 评估系统使用 eval/ 提示词
+        use_eval_prompts=False,
     )
 
     # 🔥 Use pending conversation dict (checkpoint resume)

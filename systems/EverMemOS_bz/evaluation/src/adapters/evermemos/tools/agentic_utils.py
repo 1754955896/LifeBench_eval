@@ -9,6 +9,7 @@ Provides tools for LLM-guided multi-round retrieval:
 
 import json
 import asyncio
+import os
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -204,6 +205,9 @@ async def check_sufficiency(
     Returns:
         (is_sufficient, reasoning, missing_information, key_information_found)
     """
+    # 开关: AGENTIC_SKIP_SUFFICIENCY=1 时跳过 LLM 判断,直接视为充分(省时)
+    if os.getenv("AGENTIC_SKIP_SUFFICIENCY", "0") == "1":
+        return True, "skipped by AGENTIC_SKIP_SUFFICIENCY", [], []
     try:
         # Format documents (using Episode Memory format)
         retrieved_docs = format_documents_for_llm(

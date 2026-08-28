@@ -11,8 +11,8 @@
 | 组成 | 含义 | 取值 |
 |---|---|---|
 | 数据集 | LifeBench 记忆评测基准 | `lifebench`（标准）/ `lifebench_offline`（离线变体） |
-| 系统 | 被测记忆系统 | `cognee` / `graphiti_local` / `hindsight` / `mem0` / `direct_evidence` |
-| 模型 | 系统内的模型变体（消融） | `8b` / `14b` / `32b` / `qwen3.8MAX` / `glm5.2`（仅 hindsight 系列） |
+| 系统 | 被测记忆系统 | `cognee` / `graphiti_local` / `hindsight` / `mem0` / `direct_evidence` / `evermemos` / `evermemos_native` / `graphrag` / `memos_cloud` / `memu_cloud` / `mindmemos` |
+| 模型 | 系统内的模型变体（消融） | `8b` / `14b` / `32b` / `qwen3.8MAX` / `glm5.2`（hindsight 系列）；`qwen8` / `qwen14` / `qwen32` / `qwen3.8MAX` / `glm5.2`（evermemos 系列，glm5.2 对应目录内 `glm52`） |
 
 示例：
 
@@ -46,6 +46,35 @@
 ### lifebench_offline-hindsight
 - **数据集**：离线（offline）数据集变体
 - **系统**：hindsight
+
+### lifebench-evermemos
+- **系统**：evermemos 记忆系统（默认配置）
+
+### lifebench-evermemos-{qwen8,qwen14,qwen32,qwen3.8MAX,glm52}
+- **系统**：evermemos
+- **模型变体**：后缀表示不同的系统内模型配置（qwen 系列按参数规模命名，glm52 为 GLM-5.2），用于模型消融对比。
+
+### lifebench-graphrag
+- **系统**：graphrag 图记忆系统
+
+### lifebench-memos_cloud
+- **系统**：memos（云端部署）
+
+### lifebench-memu_cloud
+- **系统**：memu（云端部署）
+- **召回评测**：采用 text-match 方式，召回结果文件为 `recall_results_text_match.json`
+
+### lifebench-mindmemos-schema
+- **系统**：mindmemos
+- **变体**：schema 结构化记忆变体
+
+### lifebench_offline-evermemos_native
+- **数据集**：离线（offline）数据集变体
+- **系统**：evermemos native（本地部署，无外部依赖）
+
+### lifebench_offline-graphrag
+- **数据集**：离线（offline）数据集变体
+- **系统**：graphrag
 
 ## 文件说明
 
@@ -121,7 +150,9 @@ hindsight 系列的 `-8b/-14b/-32b/-qwen3.8MAX/-glm5.2` 后缀即是对 hindsigh
   - `lifebench-cognee_rest.zip`（其余文件）
   - 两者解压到同一目录即可还原完整 `lifebench-cognee/`
 
-压缩为**无损**（zip DEFLATE），解压后与原文件逐字节一致。
+压缩为**无损**（zip DEFLATE / LZMA），解压后与原文件逐字节一致。
+
+注意：`lifebench-evermemos-glm52.zip`、`lifebench-evermemos-qwen14.zip` 与 `lifebench-mindmemos-schema.zip` 的单个 JSON 即使 DEFLATE 后仍超过 100 MB 上限，故改用 **LZMA 压缩**（体积分别约 13 MB / 12 MB / 47 MB）。LZMA 归档只能用**方式一（Python zipfile）**解压，`unzip` 与 PowerShell `Expand-Archive` 不支持。
 
 ### 解压还原
 

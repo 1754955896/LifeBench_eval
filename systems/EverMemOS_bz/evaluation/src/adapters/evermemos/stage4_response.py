@@ -128,13 +128,16 @@ async def locomo_response(
         Generated answer
     """
     prompt = ANSWER_PROMPT.format(context=context, question=question)
-    
+    llm_config = experiment_config.llm_config.get(experiment_config.llm_service, {})
+    max_tokens = llm_config.get("max_tokens", 8192)
+
+    result = ""
     for i in range(experiment_config.max_retries):
         try:
             result = await llm_provider.generate(
                 prompt=prompt,
                 temperature=0,
-                max_tokens=32768,
+                max_tokens=max_tokens,
             )
             
             # Safe parse FINAL ANSWER (avoid index out of range)

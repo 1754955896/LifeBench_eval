@@ -651,6 +651,7 @@ class EverMemOSAdapter(BaseAdapter):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "enable_thinking": False,  # 阿里云 qwen3 系列（thinking:{"type":"disabled"} 会 400）
         }
 
         try:
@@ -663,10 +664,13 @@ class EverMemOSAdapter(BaseAdapter):
                 answer = data["choices"][0]["message"]["content"]
                 # 学习 native 版(stage4_response):只保留 FINAL ANSWER 之后的最终答案,
                 # 丢弃 CoT 推理过程,避免 answer 过长且含推理噪音
-                if "FINAL ANSWER:" in answer:
-                    parts = answer.split("FINAL ANSWER:", 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        answer = parts[1].strip()
+                # 模型输出格式不稳定("FINAL ANSWER:" 或 "## FINAL ANSWER"),
+                # 用 rsplit 取最后一个标记并兼容两种格式
+                if "FINAL ANSWER" in answer:
+                    parts = answer.rsplit("FINAL ANSWER", 1)
+                    tail = parts[1].lstrip(": #\t\n-")
+                    if tail.strip():
+                        answer = tail.strip()
                 return answer
             return str(data)
         except Exception as exc:
