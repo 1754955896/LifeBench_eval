@@ -62,6 +62,11 @@ class Mem0Adapter(BaseAdapter):
         self.max_retries = config.get("max_retries", 5)
         self.retry_delay = config.get("retry_delay", 5.0)
         self.timeout = config.get("timeout", 300.0)
+        # LLM proxy URL for token tracking. When set, answer() routes its LLM
+        # call through the proxy so token usage is measured (mirrors the
+        # graphiti/cognee/hindsight adapters). Otherwise answer() hits
+        # llm.base_url directly and bypasses the proxy.
+        self.llm_proxy_url = config.get("llm_proxy_url", "").strip()
         self.event_poll_interval = config.get("event_poll_interval", 0.5)
         self.event_poll_timeout = config.get("event_poll_timeout", 300.0)
         # Set infer=False to store raw text directly without LLM extraction
@@ -609,6 +614,8 @@ class Mem0Adapter(BaseAdapter):
         model = llm_config.get("model", "deepseek-chat")
         api_key = llm_config.get("api_key", "")
         base_url = llm_config.get("base_url", "https://openrouter.ai/api/v1")
+        if self.llm_proxy_url:
+            base_url = self.llm_proxy_url
         temperature = llm_config.get("temperature", 0)
         max_tokens = llm_config.get("max_tokens", 32768)
 
