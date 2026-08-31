@@ -1,0 +1,23 @@
+# LifeBench Dense Dataset Configuration
+# Single person (sunyuwei) dense subset: evidence + full context concentrated in Apr~Sep
+
+name: "lifebench_dense"
+version: "1.0"
+description: "LifeBench dense subset, 1 person / 155 QA, full context concentrated in 04~09"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_dense/lifebench_dense.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 1
