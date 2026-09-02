@@ -10,7 +10,7 @@
 
 | 组成 | 含义 | 取值 |
 |---|---|---|
-| 数据集 | LifeBench 记忆评测基准 | `lifebench`（标准）/ `lifebench_offline`（离线变体） |
+| 数据集 | LifeBench 记忆评测基准 | `lifebench`（标准）/ `lifebench_offline`（离线变体）/ `lifebench_locomo_1people`（LOCOMO 单人变体） |
 | 系统 | 被测记忆系统 | `cognee` / `graphiti_local` / `hindsight` / `mem0` / `direct_evidence` / `evermemos` / `evermemos_native` / `graphrag` / `memos_cloud` / `memu_cloud` / `mindmemos` |
 | 模型 | 系统内的模型变体（消融） | `8b` / `14b` / `32b` / `qwen3.8MAX` / `glm5.2`（hindsight 系列）；`qwen8` / `qwen14` / `qwen32` / `qwen3.8MAX` / `glm5.2`（evermemos 系列，glm5.2 对应目录内 `glm52`） |
 
@@ -75,6 +75,11 @@
 ### lifebench_offline-graphrag
 - **数据集**：离线（offline）数据集变体
 - **系统**：graphrag
+
+### lifebench_locomo_1people-{cognee,graphiti_local,hindsight,mem0}
+- **数据集**：LOCOMO 单人（`locomo_1people`）变体
+- **系统**：cognee / graphiti_local / hindsight / mem0
+- **说明**：单人 LOCOMO 数据集上的四系统对比，与标准 `lifebench` 数据集相比仅题目来源不同；该变体未运行召回评测，故无 `recall_results.json`。
 
 ## 文件说明
 
