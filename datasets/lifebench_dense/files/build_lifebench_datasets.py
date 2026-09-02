@@ -6,7 +6,7 @@
   - raw 数据集（{sample_id, conversation, qa} 列表，可含 1 人或多人）
   - question_id -> evidence 的映射（question_id_to_evidence_mapping.json）
 
-输出（按人生成三份）：
+输出（三份数据集；raw 含多人时每份为多 sample 的列表）：
   1. {prefix}_evidence.json —— 纯净 evidence（只保留被选中 QA 引用的证据数据）
   2. {prefix}_dense.json     —— 目标窗口月份的完整上下文
   3. {prefix}_sparse.json    —— evidence + 全年均匀采样的 distractor，token 总量对齐 dense
@@ -286,9 +286,8 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    multi = len(raw) > 1
+    evidence_all, dense_all, sparse_all = [], [], []
     for person in raw:
-        base = f"{args.prefix}_{person['sample_id']}" if multi else args.prefix
         print(f"sample_id: {person['sample_id']}")
 
         evidence = build_evidence(person, mapping, args.window, args.threshold)
@@ -299,14 +298,9 @@ def main():
         dn_tk = summarize("dense", dense)
         sp_tk = summarize("sparse", sparse)
 
-        outputs = [
-            (f"{base}_evidence.json", evidence),
-            (f"{base}_dense.json", dense),
-            (f"{base}_sparse.json", sparse),
-        ]
-        for fname, data in outputs:
-            with open(out_dir / fname, "w", encoding="utf-8") as f:
-                json.dump([data], f, ensure_ascii=False, indent=2)
+        evidence_all.append(evidence)
+        dense_all.append(dense)
+        sparse_all.append(sparse)
 
         # 校验：evidence 应完全被 dense / sparse 包含
         ev_keys = {it["dia_id"] for _k, _dt, items in session_items(evidence["conversation"]) for it in items}
@@ -314,8 +308,18 @@ def main():
         sp_keys = {it["dia_id"] for _k, _dt, items in session_items(sparse["conversation"]) for it in items}
         print(f"  evidence 缺失 dia_id -> dense: {len(ev_keys - dn_keys)} 个, sparse: {len(ev_keys - sp_keys)} 个")
         print(f"  token: dense {dn_tk}  vs  sparse {sp_tk}  (差 {sp_tk - dn_tk:+d})")
-        print(f"  -> {base}_evidence.json / {base}_dense.json / {base}_sparse.json")
         print()
+
+    # 合并写为含 N 个 sample 的数据集文件（raw 含多人时每份为多 sample 列表）
+    for fname, data in [
+        (f"{args.prefix}_evidence.json", evidence_all),
+        (f"{args.prefix}_dense.json", dense_all),
+        (f"{args.prefix}_sparse.json", sparse_all),
+    ]:
+        with open(out_dir / fname, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        qa_total = sum(len(p["qa"]) for p in data)
+        print(f"  -> {fname}  (samples={len(data)}, qa_total={qa_total})")
 
     print("Done.")
 

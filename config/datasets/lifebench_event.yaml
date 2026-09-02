@@ -1,9 +1,9 @@
 # LifeBench Event Dataset Configuration
-# Single person (sunyuwei) event-granularity source: daily sessions replaced by event records
+# Three persons (sunyuwei/yuxiaowei/fenghaoran) event-granularity source: daily sessions replaced by event records
 
 name: "lifebench_event"
 version: "1.0"
-description: "LifeBench event-granularity source, 1 person / 328 QA / 5716 event records"
+description: "LifeBench event-granularity source, 3 persons / 1008 QA / 17369 event records"
 
 # Memory language setting
 memory_language: "zh"

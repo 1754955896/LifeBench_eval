@@ -1,9 +1,9 @@
 # LifeBench Sparse Dataset Configuration
-# Single person (sunyuwei) sparse subset: evidence + distractors sampled uniformly across 12 months
+# Three persons (sunyuwei/yuxiaowei/fenghaoran) sparse subset: evidence + distractors sampled uniformly across 12 months
 
 name: "lifebench_sparse"
 version: "1.0"
-description: "LifeBench sparse subset, 1 person / 155 QA, distractors sampled uniformly across 01~12"
+description: "LifeBench sparse subset, 3 persons / 453 QA, distractors sampled uniformly across 01~12"
 
 # Memory language setting
 memory_language: "zh"

@@ -1,9 +1,9 @@
 # LifeBench Dense Dataset Configuration
-# Single person (sunyuwei) dense subset: evidence + full context concentrated in Apr~Sep
+# Three persons (sunyuwei/yuxiaowei/fenghaoran) dense subset: evidence + full context concentrated in Apr~Sep
 
 name: "lifebench_dense"
 version: "1.0"
-description: "LifeBench dense subset, 1 person / 155 QA, full context concentrated in 04~09"
+description: "LifeBench dense subset, 3 persons / 453 QA, full context concentrated in 04~09"
 
 # Memory language setting
 memory_language: "zh"
