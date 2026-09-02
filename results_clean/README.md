@@ -76,10 +76,11 @@
 - **数据集**：离线（offline）数据集变体
 - **系统**：graphrag
 
-### lifebench_locomo_1people-{cognee,graphiti_local,hindsight,mem0}
+### lifebench_locomo_1people-{cognee,graphiti_local,hindsight,mem0,graphrag,mindmemos,evermemos}
 - **数据集**：LOCOMO 单人（`locomo_1people`）变体
-- **系统**：cognee / graphiti_local / hindsight / mem0
+- **系统**：cognee / graphiti_local / hindsight / mem0 / graphrag / mindmemos / evermemos
 - **说明**：单人 LOCOMO 数据集上的四系统对比，与标准 `lifebench` 数据集相比仅题目来源不同；该变体未运行召回评测，故无 `recall_results.json`。
+
 
 ## 文件说明
 
