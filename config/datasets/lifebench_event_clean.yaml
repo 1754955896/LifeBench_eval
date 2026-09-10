@@ -1,0 +1,23 @@
+# LifeBench Event (Clean) Dataset Configuration
+# Three persons (sunyuwei/yuxiaowei/fenghaoran) event-granularity source: daily sessions replaced by cleaned event records
+
+name: "lifebench_event_clean"
+version: "1.0"
+description: "LifeBench event-granularity source (cleaned), 3 persons / 1008 QA / 7217 event records"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_event_scource/lifebench_event_clean.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 1

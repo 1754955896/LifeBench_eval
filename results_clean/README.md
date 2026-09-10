@@ -79,7 +79,7 @@
 ### lifebench_locomo_1people-{cognee,graphiti_local,hindsight,mem0,graphrag,mindmemos,evermemos}
 - **数据集**：LOCOMO 单人（`locomo_1people`）变体
 - **系统**：cognee / graphiti_local / hindsight / mem0 / graphrag / mindmemos / evermemos
-- **说明**：单人 LOCOMO 数据集上的四系统对比，与标准 `lifebench` 数据集相比仅题目来源不同；该变体未运行召回评测，故无 `recall_results.json`。
+- **说明**：单人 LOCOMO 数据集上的七系统对比，与标准 `lifebench` 数据集相比仅题目来源不同；该变体未运行召回评测，故无 `recall_results.json`。
 
 
 ## 文件说明
@@ -95,6 +95,7 @@
 | `add_latency.json` | 写入时延：每个 session 导入记忆系统的耗时（`latency_seconds`） |
 | `search_latency.json` | 检索时延：每个问题的检索耗时（`latency_seconds`） |
 | `checkpoint_default.json` | 流水线阶段检查点（`run_name`、`completed_stages` 等） |
+| `llm_token_stats.json` | LLM token 用量统计（`prompt_tokens` / `completion_tokens` / `total_tokens` / `request_count` / `records`），仅较新的实验目录包含 |
 
 ### 各文件详细说明
 
