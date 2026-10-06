@@ -23,6 +23,7 @@ from src.trackers.system_trackers.mindmemos import MindMemosTracker  # noqa: F40
 from src.trackers.system_trackers.evermemos import EvermemosTracker  # noqa: F401
 from src.trackers.system_trackers.memoscloud import MemosCloudTracker  # noqa: F401
 from src.trackers.system_trackers.memucloud import MemuCloudTracker  # noqa: F401
+from src.trackers.system_trackers.graphrag import GraphRAGTracker  # noqa: F401
 
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "EvermemosTracker",
     "MemosCloudTracker",
     "MemuCloudTracker",
+    "GraphRAGTracker",
     "register_tracker",
     "get_tracker",
     "list_trackers",

@@ -16,19 +16,22 @@ config/
 
 | 文件 | 系统 |
 |------|------|
-| `mem0.yaml` | Mem0 |
 | `cognee.yaml` | Cognee |
+| `evermemos_native.yaml` | EverMemos Native |
+| `evermemos.yaml` | EverMemos |
+| `graphiti_local.yaml` | Graphiti Local |
 | `graphiti.yaml` | Graphiti |
 | `graphrag.yaml` | GraphRAG |
 | `hindsight.yaml` | Hindsight |
-| `evermemos.yaml` | EverMemos |
-| `evermemos_native.yaml` | EverMemos Native |
+| `lifemem.yaml` | LifeMem |
+| `mem0.yaml` | Mem0 |
+| `memos_cloud.yaml` | Memos Cloud |
+| `memu_cloud.yaml` | Memu Cloud |
 | `mindmemos.yaml` | MindMemos |
 | `tencentdb.yaml` | TencentDB Agent Memory |
-| `memos_cloud.yaml` | Memos Cloud |
-| `memos_cloud_blocking.yaml` | Memos Cloud (Blocking) |
 | `zep_cloud.yaml` | Zep Cloud |
-| `lifemem.yaml` | LifeMem |
+
+
 
 ### 配置格式
 
@@ -39,8 +42,8 @@ env_template: "systems/mem0/server/.env.example"          # 环境变量模板
 docker_wait: 30                           # 等待 Docker 服务就绪的秒数
 ```
 
-> **注意**：带 `_cloud` 或 `_blocking` 的配置文件包含敏感 API Key，已加入 `.gitignore`。
+> **注意**：带 `_cloud` 的配置文件包含敏感 API Key，已加入 `.gitignore`。
 
 ## datasets/ — 数据集元数据
 
-定义各数据集的元信息，如样本配置、评估类型等。
+定义各数据集的元信息，如样本配置、评估类型等。具体数据样式可查看根目录下datasets文件夹

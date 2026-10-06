@@ -33,7 +33,7 @@ app = Flask(__name__)
 # Real LLM configuration
 REAL_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
 REAL_API_KEY = os.getenv("LLM_API_KEY", "")
-REAL_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+REAL_MODEL = os.getenv("LLM_MODEL", "deepseek-flash")
 
 # Request / response transformation — set via --system CLI flag.
 # Default: identity passthrough (forwards request/response JSON unchanged).

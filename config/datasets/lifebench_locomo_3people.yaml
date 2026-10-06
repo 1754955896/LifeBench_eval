@@ -3,7 +3,7 @@
 
 name: "lifebench_locomo_3people"
 version: "1.0"
-description: "Subset of lifebench_locomo_format, 3 persons / ~1013 QA"
+description: "Subset of lifebench_locomo_format, 3 persons / ~1008 QA"
 
 # Memory language setting
 memory_language: "zh"

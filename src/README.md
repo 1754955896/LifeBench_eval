@@ -13,7 +13,8 @@ src/
 ├── loaders/       # 数据加载器：加载评测数据集
 ├── formatters/    # 格式化器：格式化检索结果为上下文
 ├── models/        # 数据模型：定义框架内部数据结构
-└── utils/         # 工具函数：配置、日志、重试等
+├── trackers/      # 资源追踪：操作耗时、CPU/内存采样、LLM token
+└── utils/         # 工具函数：配置、日志、重试、LLM 代理、召回评测
 ```
 
 ## 核心接口
@@ -57,3 +58,19 @@ class BaseBuilder:
 1. **ADD + SEARCH**：按日期交叉执行数据摄入与检索
 2. **ANSWER**：基于检索结果生成答案
 3. **EVALUATE**：使用 LLM Judge 评估答案质量
+
+## 各目录说明
+
+每个子目录都有自己的 README，逐文件说明职责：
+
+| 目录 | README | 一句话 |
+|------|--------|--------|
+| `adapters/` | [README](adapters/README.md) | 统一接口 ↔ 各记忆系统调用的翻译层 |
+| `builders/` | [README](builders/README.md) | 被测系统运行环境的准备与清理 |
+| `evaluators/` | [README](evaluators/README.md) | 答案判分（LLM Judge / 精确匹配 / 混合） |
+| `formatters/` | [README](formatters/README.md) | 检索结果 → prompt 上下文 |
+| `loaders/` | [README](loaders/README.md) | 数据集解析 |
+| `models/` | [README](models/README.md) | 框架内部数据结构 |
+| `pipeline/` | [README](pipeline/README.md) | 四阶段调度与断点管理 |
+| `trackers/` | [README](trackers/README.md) | 资源追踪（per-op / 全局监控 / 系统级） |
+| `utils/` | [README](utils/README.md) | 配置、日志、LLM 代理、召回评测等 |

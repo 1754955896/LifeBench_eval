@@ -16,7 +16,6 @@ _BUILDER_MODULES: Dict[str, str] = {
     "mem0": "src.builders.mem0_builder",
     "hindsight": "src.builders.hindsight_builder",
     "cognee": "src.builders.cognee_builder",
-    "memu_server": "src.builders.memu_server_builder",
     "graphiti": "src.builders.graphiti_builder",
     "graphiti_local": "src.builders.graphiti_local_builder",
     "graphrag": "src.builders.graphrag_builder",

@@ -6,9 +6,12 @@
 
 ```
 datasets/
-├── lifebench_locomo_format/       # LifeBench LoCoMo 标准格式数据集
+├── lifebench_dense/  
+├── lifebench_event_scource/  
 ├── lifebench_locomo_3people/      # 3人对话版本的 LifeBench LoCoMo
+├── lifebench_locomo_format/       # LifeBench LoCoMo 标准格式数据集
 ├── lifebench_offline/             # LifeBench 离线版（ask_time 统一为 2025-12-31）
+├── lifebench_raw/             # 原始 LifeBench 的多源格式数据版本，用于进行recall评测
 ├── locomo/                        # 原始 LoCoMo 数据
 └── smoke/                          # 冒烟测试数据集
 ```
@@ -19,7 +22,7 @@ datasets/
 
 LifeBench 标准格式的 LoCoMo 数据集。
 
-- `lifebench_locomo_conversation_format_v2.0_3380QA.json` — 主要数据集（约 27MB）
+- `lifebench_locomo_conversation_format_v2.0_3380QA.json` — 主要数据集
 
 ### lifebench_locomo_3people/
 
@@ -33,12 +36,17 @@ LifeBench 离线版数据集（10 人 / 3380 QA）。由 `lifebench_locomo_forma
 
 - `lifebench_offline.json`
 
+### lifebench_raw/
+
+LifeBench 的多源格式版本。
+按照10名用户进行了区分，并且包括构造qa——evidence配对的脚本和结果文件，用于进行recall评测
+
 ### locomo/
 
-原始 LoCoMo（Long-term Conversation Model）数据集。
+原始 LoCoMo（Long-term Conversation Model）数据集，和能在 lifebench_eval 上直接运行的修改格式后版本。
 
+- `locomo10_raw.json`
 - `locomo10.json`
-- `first_sample.json`
 
 ### smoke/
 

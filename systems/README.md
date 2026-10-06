@@ -201,13 +201,79 @@ Adapter（[src/adapters/mem0_adapter.py](../src/adapters/mem0_adapter.py)）通�
 
 ---
 
-## 四个系统对比
+## EverMemOS
 
-| 维度 | MindMemOS | Mem0 | Hindsight | Cognee |
-|------|-----------|------|-----------|--------|
-| 运行模式 | Docker + HTTP API | Docker + HTTP API | 进程内直调 | 进程内直调 |
-| 外部依赖 | Qdrant, Neo4j, Kafka | PostgreSQL(pgvector) | 无 | 无 |
-| 存储 | Qdrant(向量) + Neo4j(图谱) | pgvector(向量) + PostgreSQL | pg0(嵌入式PG) | SQLite + LanceDB + Ladybug |
-| ADD 开销 | 低（写 API） | 低（写 API，可选 LLM 提取） | 中（LLM 提取事实） | 高（cognify 5 任务流水线） |
-| 搜索策略 | fast / agentic 多跳 | 向量搜索 + rerank | 语义+BM25+图谱+时序 | GRAPH_COMPLETION 图谱遍历 |
-| 启动时间 | ~30-90s（Docker + 服务） | ~30-60s（Docker） | <5s | <5s |
+**运行方式**：Docker 基础设施 + FastAPI 服务器（HTTP 通信）。另有 **evermemos_native** 变体：不启 Docker / HTTP 服务，在评测进程内直接 import EverMemOS 模块。
+
+### 需要配置的文件
+
+| 文件 | 说明 | 操作 |
+|------|------|------|
+| `LifeBench_eval/.env` | 全局 API Key | 填写 LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY 等 |
+| `systems/EverMemOS_bz/.env` | 服务端环境变量（LLM / 向量化 / 重排） | 从 `systems/EverMemOS_bz/env.template` 复制后填写，**需手动创建** |
+| `config/systems/evermemos.yaml` | 流水线参数 | 一般无需修改；可选调整 search.mode、add 开关、api_url 等 |
+| `systems/EverMemOS_bz/.venv` | 运行 API Server 与 native 适配器的 Python 环境 | 按 `systems/EverMemOS_bz/README_zh.md` 安装 |
+
+### 需要启动的服务
+
+Builder（[src/builders/evermemos_builder.py](../src/builders/evermemos_builder.py)）自动处理以下启动流程：
+
+1. **Docker 基础设施** — MongoDB（文档）、Elasticsearch（全文检索）、Milvus（向量，含 etcd + MinIO）、Redis（缓存）；首次启动等待约 120s
+2. **FastAPI Server** — 用 `systems/EverMemOS_bz/.venv` 启动 `systems/EverMemOS_bz/src/run.py --port 8001 --env-file systems/EverMemOS_bz/.env`
+3. **就绪探测** — 轮询 `http://localhost:8001/docs`，超时由 `api_wait`（默认 180s）控制
+
+服务端 stdout/stderr 会写入 `{output_dir}/evermemos_server.log`，排查写入/检索耗时用。Builder 结束时终止 API 进程并执行 `docker compose down`。
+
+### 手动启动（Builder 失败时备用）
+
+```bash
+# 1. 启动 Docker 服务
+docker compose -f systems/EverMemOS_bz/docker-compose.yaml up -d
+
+# 2. 启动 API Server（用 EverMemOS_bz 的 venv）
+cd systems/EverMemOS_bz/src
+../.venv/Scripts/python.exe run.py --port 8001 --env-file ../.env
+```
+
+### 核心流程
+
+Adapter（[src/adapters/evermemos_adapter.py](../src/adapters/evermemos_adapter.py)）通过 HTTP 与 EverMemOS API 通信：
+
+- **ADD** → `POST /api/v3/agentic/memorize`，按消息写入（限速由 `rpm` 控制），会话元数据走 `/api/v3/agentic/conversation-meta`
+- **SEARCH** → `search.mode=agentic` 走 `POST /api/v3/agentic/retrieve_agentic`（多跳检索）；`lightweight` 走 `/retrieve_lightweight`，由 `lightweight_search_mode` 选择 bm25_only / hybrid / emb_only
+- **ANSWER** → Adapter 内置的独立 LLM 调用，上下文条数由 `answer.response_top_k` 决定
+
+关键配置项（在 `config/systems/evermemos.yaml` 中）：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `api_url` | `http://localhost:8001` | HTTP 服务地址 |
+| `api_wait` | 180 | 等待 API 就绪的秒数 |
+| `rpm` | 40 | 写入限速（每分钟请求数） |
+| `search.mode` | `agentic` | agentic（多跳）/ lightweight |
+| `search.lightweight_search_mode` | `hybrid` | bm25_only / hybrid / emb_only |
+| `search.use_reranker` | true | 检索结果是否重排 |
+| `add.enable_semantic_extraction` | false | 是否做语义抽取 |
+| `add.enable_clustering` | true | 是否做事件聚类 |
+| `answer.response_top_k` | 30 | 送入回答的检索结果数 |
+
+### EverMemOS Native（进程内直调）
+
+配置用 `config/systems/evermemos_native.yaml`。Builder（[src/builders/evermemos_native_builder.py](../src/builders/evermemos_native_builder.py)）不启动任何服务，只检查 venv：如果当前 Python 不是 `systems/EverMemOS_bz/.venv`，会自动用该 venv 的 Python 重启整个评测命令。
+
+Adapter（[src/adapters/evermemos_native_adapter.py](../src/adapters/evermemos_native_adapter.py)）直接 import `memory_layer` / `evaluation.src.adapters.evermemos` 等模块，使用 InMemory 存储 + 本地 `.pkl` 索引（BM25 / embedding），向量化与重排仍走外部 API，因此不需要 MongoDB / ES / Milvus。
+
+注意 `buffer_mode`：native 适配器会逐条缓冲消息，直到日期命中 `final_date`（默认 2025-12-31）才统一构建索引，之后的检索才有内容可召回。
+
+---
+
+## 五个系统对比
+
+| 维度 | MindMemOS | Mem0 | Hindsight | Cognee | EverMemOS |
+|------|-----------|------|-----------|--------|-----------|
+| 运行模式 | Docker + HTTP API | Docker + HTTP API | 进程内直调 | 进程内直调 | Docker + HTTP API（native 变体为进程内直调） |
+| 外部依赖 | Qdrant, Neo4j, Kafka | PostgreSQL(pgvector) | 无 | 无 | MongoDB, Elasticsearch, Milvus, Redis（native 变体无） |
+| 存储 | Qdrant(向量) + Neo4j(图谱) | pgvector(向量) + PostgreSQL | pg0(嵌入式PG) | SQLite + LanceDB + Ladybug | MongoDB + ES(全文) + Milvus(向量) |
+| ADD 开销 | 中（写 API） | 低（写 API，可选 LLM 提取） | 中（LLM 提取事实） | 高（cognify 5 任务流水线） | 中（写 API + 可选语义抽取/聚类） |
+| 搜索策略 | fast / agentic 多跳 | 向量搜索 + rerank | 语义+BM25+图谱+时序 | GRAPH_COMPLETION 图谱遍历 | agentic 多跳 / lightweight（bm25/hybrid/向量） |
+| 启动时间 | ~30-90s（Docker + 服务） | ~30-60s（Docker） | <5s | <5s | ~120s+（Docker 首启） |

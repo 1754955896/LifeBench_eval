@@ -2,8 +2,6 @@
 
 本目录存放 LifeBench 记忆评测的**清洗后最终结果**，每个子目录对应一次独立实验。
 
-结果目录已做清理：删除了 `.bak` 备份、`report.txt`、中间产物 `*_fix.json` / `*_fixed.json` / `recall_checkpoint*.json`，只保留最终（含修复后）的成果文件。
-
 ## 命名约定
 
 目录名格式：`lifebench[-_]<变体>-<系统>[-<模型>]`
