@@ -1,41 +1,41 @@
 # lifebench_dense
 
-三人生命日志（`孙雨薇` / `于晓薇` / `冯浩然`）的 **dense 子集**构建目录。包含四类数据文件、以及生成它们的构建脚本与中间产物。
+The **dense-subset** build directory for three people's life logs (`孙雨薇` / `于晓薇` / `冯浩然`). Contains four kinds of data files, plus the build scripts and intermediate artifacts that produce them.
 
-- **token 口径**：`tiktoken` 的 `cl100k_base`，与 `src/utils/recall_evaluator.py` 的 `_count_tokens` 一致。
-- **evidence 定义**：以 `datasets/lifebench_raw/question_id_to_evidence_mapping.json` 中 `question_id → evidence` 的映射为准，证据条目的唯一键为 `dia_id = {session_date}_{source}{phone_id}`。
+- **token convention**: `tiktoken`'s `cl100k_base`, consistent with `src/utils/recall_evaluator.py`'s `_count_tokens`.
+- **evidence definition**: governed by the `question_id → evidence` mapping in `datasets/lifebench_raw/question_id_to_evidence_mapping.json`; the unique key of an evidence entry is `dia_id = {session_date}_{source}{phone_id}`.
 
 ---
 
-## 顶层数据文件（4 个最终数据集，每个含 3 个 sample）
+## Top-level data files (4 final datasets, each with 3 samples)
 
-| 文件 | 含义 | sample | QA | 条数 | token | session | 月份 |
+| File | Meaning | sample | QA | entries | token | session | month |
 |---|---|---|---|---|---|---|---|
-| `lifebench_raw.json` | 原始完整数据 | 3 | 1008 | 22251 | 2089963 | 1095 | 01~12 |
-| `lifebench_evidence.json` | 纯净 evidence | 3 | 453 | 3965 | 371479 | 482 | 04~09 |
-| `lifebench_dense.json` | dense（完整上下文） | 3 | 453 | 11404 | 1070078 | 549 | 04~09 |
-| `lifebench_sparse.json` | sparse（均匀稀疏） | 3 | 453 | 11401 | 1070127 | 1093 | 01~12 |
+| `lifebench_raw.json` | raw complete data | 3 | 1008 | 22251 | 2089963 | 1095 | 01~12 |
+| `lifebench_evidence.json` | pure evidence | 3 | 453 | 3965 | 371479 | 482 | 04~09 |
+| `lifebench_dense.json` | dense (full context) | 3 | 453 | 11404 | 1070078 | 549 | 04~09 |
+| `lifebench_sparse.json` | sparse (uniformly sparse) | 3 | 453 | 11401 | 1070127 | 1093 | 01~12 |
 
-### 人物构成（3 个 sample）
+### Person composition (3 samples)
 
-| 人物 | raw QA | evidence/dense/sparse QA | dense 条数 | dense token |
+| Person | raw QA | evidence/dense/sparse QA | dense entries | dense token |
 |---|---:|---:|---:|---:|
 | 孙雨薇 | 328 | 155 | 3856 | 368416 |
 | 于晓薇 | 332 | 136 | 3631 | 338378 |
 | 冯浩然 | 348 | 162 | 3917 | 363284 |
 
-> `lifebench_raw.json` 由 `files/build_raw_3people.py` 从 `lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA.json` 抽取上述 3 人构成。
+> `lifebench_raw.json` is produced by `files/build_raw_3people.py`, extracting the above 3 people from `lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA.json`.
 
-### 三者关系
+### Relationship among the three
 
-`dense` 与 `sparse` 的 **evidence 完全相同**（均严格包含 `lifebench_evidence.json` 的 453 条 QA / 3965 条证据，0 缺失），token 总量也基本一致（≈107 万）。唯一区别在于**上下文如何填充**（对每个 sample 分别处理）：
+`dense` and `sparse` have **identical evidence** (both strictly contain all 453 QAs / 3965 evidence entries of `lifebench_evidence.json`, with 0 missing), and their total token counts are basically equal (≈1.07M). The only difference is **how the context is filled** (handled per sample):
 
-- **dense**：只保留 4~9 月的**完整**对话上下文 —— 数据集中在目标窗口。
-- **sparse**：保留 evidence 后，从**全年 12 个月**均匀采样非 evidence 数据（distractor）补齐到与该 sample 的 dense 相同的 token 总量 —— 数据全年均匀、不集中在目标月份。
+- **dense**: keeps only the **complete** Apr–Sep conversation context — data concentrated in the target window.
+- **sparse**: after keeping the evidence, uniformly samples non-evidence data (distractors) from the **full 12 months** to reach the same total token count as that sample's dense — data uniformly spread across the year, not concentrated in the target months.
 
-### 月份分布（token，3 人合计）
+### Month distribution (token, 3 people combined)
 
-| 月 | dense | sparse |
+| Month | dense | sparse |
 |---|---:|---:|
 | 01 | 0 | 87452 |
 | 02 | 0 | 87493 |
@@ -50,11 +50,11 @@
 | 11 | 0 | 87519 |
 | 12 | 0 | 87730 |
 
-> sparse 各月基本对齐 ~87.5k 的水位；04、05 月偏高，是该两月 evidence 本身较大、不可删减所致。
+> sparse months basically align at the ~87.5k watermark; months 04 and 05 are higher because those two months' evidence is itself larger and cannot be trimmed.
 
-### QA 类别分布（多标签，计数口径：类别数组含该类即 +1）
+### QA category distribution (multi-label; counting convention: a category is +1 if the category array contains it)
 
-| 类别 | raw (1008) | evidence / dense / sparse (453) |
+| Category | raw (1008) | evidence / dense / sparse (453) |
 |---|---:|---:|
 | Single_hop | 480 | 214 |
 | Multi_hop | 326 | 147 |
@@ -68,30 +68,30 @@
 
 ---
 
-## 构建链路（lineage）
+## Build chain (lineage)
 
 ```
-lifebench_locomo_conversation_format_v2.0_3380QA.json（10 人 / 3380 QA）
+lifebench_locomo_conversation_format_v2.0_3380QA.json (10 people / 3380 QA)
  │
  ├─ build_raw_3people.py ────────────────► lifebench_raw.json
- │   （抽取 孙雨薇 / 于晓薇 / 冯浩然 3 人，1008 QA）
+ │   (extract 孙雨薇 / 于晓薇 / 冯浩然, 1008 QA)
  │
  └─ build_lifebench_datasets.py ─────────► lifebench_evidence.json / lifebench_dense.json / lifebench_sparse.json
-     （对每个 sample：剔除非 evidence 数据 → evidence；4~9 月完整上下文 → dense；全年均匀采样 → sparse）
+     (per sample: strip non-evidence data → evidence; Apr–Sep full context → dense; uniform full-year sampling → sparse)
 ```
 
-> 箭头 `──►` 表示最终被采用并重命名放入顶层；`──► files/` 表示中间产物存于 `files/`。
+> The arrow `──►` means finally adopted and renamed into the top level; `──► files/` means intermediate artifacts are stored in `files/`.
 
 ---
 
-## files/ 目录
+## files/ directory
 
-构建脚本与中间数据（历史产物，未删除以便回溯）。
+Build scripts and intermediate data (historical artifacts, not deleted for retroactive tracing).
 
-**构建脚本**：
+**Build scripts**:
 
-- `build_raw_3people.py` — 从 3380QA 抽取指定人物生成多人 `lifebench_raw.json`。
-- `build_lifebench_datasets.py` — **通用入口**：从 `lifebench_raw.json` 一次生成 evidence / dense / sparse 三份，参数化（`--window` / `--threshold` / `--seed` / `--prefix` / `--raw` / `--mapping` / `--out-dir`）。raw 含多人时，每份输出为多 sample 的列表。默认参数即可复现顶层三个文件。其余脚本为单步骤的历史实现，其逻辑已合并至此。
+- `build_raw_3people.py` — extracts specified people from 3380QA to produce the multi-person `lifebench_raw.json`.
+- `build_lifebench_datasets.py` — **general entry**: generates evidence / dense / sparse at once from `lifebench_raw.json`, parameterized (`--window` / `--threshold` / `--seed` / `--prefix` / `--raw` / `--mapping` / `--out-dir`). When raw contains multiple people, each output is a list of multiple samples. The default parameters reproduce the top-level three files. The remaining scripts are single-step historical implementations, whose logic has been merged here.
 
   ```bash
   python files/build_raw_3people.py
@@ -101,17 +101,17 @@ lifebench_locomo_conversation_format_v2.0_3380QA.json（10 人 / 3380 QA）
       --out-dir . --prefix lifebench
   ```
 
-- `build_dense_evidence_only.py` — 剔除非 evidence 数据。
-- `build_dense_apr_sep.py` — 按 evidence 时间集中度（≥90% 在 4~9 月）筛 QA。
-- `build_dense_apr_sep_with_unanswerable.py` — 加入 Unanswerable（题面日期）。
-- `build_dense_full_sessions.py` — v2 非空 session 取完整数据。
-- `build_dense_apr_sep_full.py` — 4~9 月全部 session 完整数据。
-- `build_dense_sparsity.py` — 均匀稀疏采样，对齐 dense token 总量。
-- `explore_sparsity.py` — 每月条数 / token 分布探索。
+- `build_dense_evidence_only.py` — strips non-evidence data.
+- `build_dense_apr_sep.py` — filters QAs by evidence time concentration (≥90% in Apr–Sep).
+- `build_dense_apr_sep_with_unanswerable.py` — adds Unanswerable (by question-surface date).
+- `build_dense_full_sessions.py` — v2 non-empty sessions take complete data.
+- `build_dense_apr_sep_full.py` — complete data for all Apr–Sep sessions.
+- `build_dense_sparsity.py` — uniform sparse sampling, aligned to the dense token total.
+- `explore_sparsity.py` — explores per-month entry / token distribution.
 
-**中间数据**（单人 `孙雨薇` 历史产物）：
+**Intermediate data** (single-person `孙雨薇` historical artifacts):
 
-| 文件 | QA | 条数 | token | session | 月份 |
+| File | QA | entries | token | session | month |
 |---|---|---|---|---|---|
 | `lifebench_locomo_1people_evidence_only.json` | 328 | 2469 | 237276 | 312 | 01~12 |
 | `lifebench_locomo_1people_dense_apr_sep.json` | 127 | 1060 | 100863 | 148 | 04~09 |
@@ -119,9 +119,9 @@ lifebench_locomo_conversation_format_v2.0_3380QA.json（10 人 / 3380 QA）
 
 ---
 
-## 数据格式
+## Data format
 
-每个文件是一个长度为 3 的列表，元素为 `{sample_id, conversation, qa}`：
+Each file is a list of length 3, whose elements are `{sample_id, conversation, qa}`:
 
-- `conversation`：字典，含 `speaker_a` / `speaker_b`，以及 `session_N` + `session_N_date_time` 键对（一年 365 个 session = 每天一个）。session 值为 `[{speaker, dia_id, text}]` 列表。
-- `qa`：`{question, answer, evidence, category, question_type, question_id, ask_time, score_points}` 列表。
+- `conversation`: a dict containing `speaker_a` / `speaker_b`, plus `session_N` + `session_N_date_time` key pairs (365 sessions a year = one per day). A session's value is a list of `[{speaker, dia_id, text}]`.
+- `qa`: a list of `{question, answer, evidence, category, question_type, question_id, ask_time, score_points}`.

@@ -1,56 +1,56 @@
-# 数据集目录
+# Datasets Directory
 
-存放评测用的数据集文件。
+Stores the dataset files used for evaluation.
 
-## 目录结构
+## Directory structure
 
 ```
 datasets/
-├── lifebench_locomo_format/       # LifeBench LoCoMo 标准格式数据集
-├── lifebench_locomo_3people/      # 3人对话版本的 LifeBench LoCoMo
-├── lifebench_offline/             # LifeBench 离线版（ask_time 统一为 2025-12-31）
-├── locomo/                        # 原始 LoCoMo 数据
-└── smoke/                          # 冒烟测试数据集
+├── lifebench_locomo_format/       # LifeBench LoCoMo standard-format dataset
+├── lifebench_locomo_3people/      # 3-person conversation version of LifeBench LoCoMo
+├── lifebench_offline/             # LifeBench offline version (ask_time uniformly set to 2025-12-31)
+├── locomo/                        # original LoCoMo data
+└── smoke/                          # smoke-test dataset
 ```
 
-## 数据集说明
+## Dataset descriptions
 
 ### lifebench_locomo_format/
 
-LifeBench 标准格式的 LoCoMo 数据集。
+LifeBench's standard-format LoCoMo dataset.
 
-- `lifebench_locomo_conversation_format_v2.0_3380QA.json` — 主要数据集（约 27MB）
+- `lifebench_locomo_conversation_format_v2.0_3380QA.json` — primary dataset (~27MB)
 
 ### lifebench_locomo_3people/
 
-3人对话版本的 LifeBench LoCoMo 数据集。
+3-person conversation version of the LifeBench LoCoMo dataset.
 
 - `lifebench_locomo_3people.json`
 
 ### lifebench_offline/
 
-LifeBench 离线版数据集（10 人 / 3380 QA）。由 `lifebench_locomo_format` 生成，所有 QA 的 `ask_time` 字段强制为 `2025-12-31`，其余字段不变。
+LifeBench offline-version dataset (10 people / 3380 QA). Generated from `lifebench_locomo_format`, with every QA's `ask_time` field forced to `2025-12-31`; all other fields unchanged.
 
 - `lifebench_offline.json`
 
 ### locomo/
 
-原始 LoCoMo（Long-term Conversation Model）数据集。
+The original LoCoMo (Long-term Conversation Model) dataset.
 
 - `locomo10.json`
 - `first_sample.json`
 
 ### smoke/
 
-用于冒烟测试的小规模数据集，用于快速验证框架功能。
+A small-scale dataset for smoke testing, used to quickly validate framework functionality.
 
 - `smoke_data.json`
 - `locomo_smoke.json`
 
-## 数据格式
+## Data format
 
-数据集采用统一的 JSON 格式，包含：
+The datasets use a unified JSON format, containing:
 
-- **sessions**：对话会话列表，每个会话包含日期和消息列表
-- **qa_pairs**：问答对，包含问题、期望答案和答案类型标签
-- **samples**：样本列表，每个样本关联特定用户/场景
+- **sessions**: list of conversation sessions, each containing a date and a message list
+- **qa_pairs**: question-answer pairs, containing the question, expected answer, and answer-type label
+- **samples**: list of samples, each associated with a specific user/scenario

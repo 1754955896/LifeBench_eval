@@ -1,59 +1,59 @@
-# LifeBench_eval 核心源码
+# LifeBench_eval Core Source
 
-评估框架的核心代码，实现对记忆系统的自动化评测。
+The core code of the evaluation framework, implementing automated evaluation of memory systems.
 
-## 目录结构
+## Directory structure
 
 ```
 src/
-├── adapters/      # 适配器：连接框架与各记忆系统
-├── builders/      # 构建器：启动和管理被测系统的运行环境
-├── pipeline/      # 流水线：ADD → SEARCH → ANSWER → EVALUATE 四阶段调度
-├── evaluators/    # 评估器：评判答案质量
-├── loaders/       # 数据加载器：加载评测数据集
-├── formatters/    # 格式化器：格式化检索结果为上下文
-├── models/        # 数据模型：定义框架内部数据结构
-└── utils/         # 工具函数：配置、日志、重试等
+├── adapters/      # adapters: connect the framework to each memory system
+├── builders/      # builders: start and manage the runtime environment of systems under test
+├── pipeline/      # pipeline: ADD → SEARCH → ANSWER → EVALUATE four-stage scheduling
+├── evaluators/    # evaluators: judge answer quality
+├── loaders/       # data loaders: load evaluation datasets
+├── formatters/    # formatters: format retrieval results into context
+├── models/        # data models: define the framework's internal data structures
+└── utils/         # utility functions: config, logging, retry, etc.
 ```
 
-## 核心接口
+## Core interfaces
 
-### Adapter（适配器）
+### Adapter
 
-定义框架与记忆系统的接口，每个被测系统需实现以下方法：
+Defines the interface between the framework and memory systems; each system under test must implement the following methods:
 
 ```python
 class BaseAdapter:
     async def add_chunks(self, chunks: List[MessageChunk]) -> None:
-        """摄入消息片段到记忆系统"""
+        """Ingest message chunks into the memory system"""
 
     async def search(self, query: str, user_id: str, top_k: int = 5) -> List[SearchResult]:
-        """搜索记忆"""
+        """Search memories"""
 
     async def answer(self, query: str, context: List[str]) -> str:
-        """基于上下文生成回答"""
+        """Generate an answer based on context"""
 
     async def cleanup(self) -> None:
-        """清理资源"""
+        """Clean up resources"""
 ```
 
-### Builder（构建器）
+### Builder
 
-启动被测记忆系统的运行环境（通常是 Docker）：
+Starts the runtime environment of the memory system under test (usually Docker):
 
 ```python
 class BaseBuilder:
     async def build(self) -> bool:
-        """启动系统，返回是否成功"""
+        """Start the system, returns whether it succeeded"""
 
     async def cleanup(self) -> None:
-        """清理系统资源"""
+        """Clean up system resources"""
 ```
 
-### Pipeline（流水线）
+### Pipeline
 
-四阶段评测流程，详见 `pipeline/runner.py`：
+Four-stage evaluation flow, details in `pipeline/runner.py`:
 
-1. **ADD + SEARCH**：按日期交叉执行数据摄入与检索
-2. **ANSWER**：基于检索结果生成答案
-3. **EVALUATE**：使用 LLM Judge 评估答案质量
+1. **ADD + SEARCH**: interleaves data ingestion and retrieval by date
+2. **ANSWER**: generates answers based on the retrieval results
+3. **EVALUATE**: uses an LLM Judge to evaluate answer quality

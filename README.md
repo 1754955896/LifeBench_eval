@@ -1,78 +1,78 @@
-# LifeBench_eval 记忆系统评估框架
+# LifeBench_eval Memory System Evaluation Framework
 
-用于评估 Mem0 等记忆系统在实际生活场景中的表现。
+Used to evaluate the performance of memory systems such as Mem0 in real-life scenarios.
 
-## 简介
+## Introduction
 
-LifeBench_eval 是一个通用的记忆系统评测框架，支持：
+LifeBench_eval is a general-purpose memory-system evaluation framework, supporting:
 
-- **多系统评测**：Mem0、Cognee、Graphiti、Hindsight、EverMemos、MindMemos 等
-- **三阶段流水线**：ADD + SEARCH → ANSWER → EVALUATE
-- **断点续跑**：支持按 Sample、Date、QA 粒度的断点恢复
-- **LLM Judge 评估**：基于大模型对答案质量进行评分
-- **Docker 化部署**：被测系统以 Docker 容器方式运行
+- **Multi-system evaluation**: Mem0, Cognee, Graphiti, Hindsight, EverMemos, MindMemos, and more
+- **Three-stage pipeline**: ADD + SEARCH → ANSWER → EVALUATE
+- **Resumable runs**: supports checkpoint recovery at Sample, Date, and QA granularity
+- **LLM Judge evaluation**: scores answer quality via a large language model
+- **Dockerized deployment**: the systems under test run as Docker containers
 
-## 快速开始
+## Quick Start
 
-### 1. 配置环境
+### 1. Configure the environment
 
 ```bash
-# 复制环境变量模板
+# copy the environment variable template
 cp env.template .env
 
-# 编辑 .env，填入你的 API Key
+# edit .env and fill in your API Key
 vim .env
 ```
 
-### 2. 运行评测
+### 2. Run an evaluation
 
 ```bash
-# 完整评测
+# full evaluation
 python cli.py --dataset lifebench_locomo_format --system mem0
 
-# 指定输出目录
+# specify an output directory
 python cli.py --dataset lifebench_locomo_format --system mem0 --output results/my-run
 
-# 断点续跑
+# resume from a checkpoint
 python cli.py --dataset lifebench_locomo_format --system mem0 --resume
 
-# Debug 模式（生成详细日志）
+# Debug mode (produces detailed logs)
 python cli.py --dataset lifebench_locomo_format --system mem0 --debug
 ```
 
-### 3. 查看结果
+### 3. View results
 
-评测结果保存在 `results/{dataset}-{system}/` 目录：
+Evaluation results are saved in the `results/{dataset}-{system}/` directory:
 
 ```
 results/lifebench_locomo_format-mem0/
-├── checkpoint_default.json     # 断点记录
-├── add_latency.json            # ADD 延迟统计
-├── search_latency.json         # SEARCH 延迟统计
-├── search_results.json         # 检索结果
-├── answer_results.json         # 回答结果
-├── eval_results.json           # 评估结果
-└── report.txt                  # 文本报告
+├── checkpoint_default.json     # checkpoint records
+├── add_latency.json            # ADD latency statistics
+├── search_latency.json         # SEARCH latency statistics
+├── search_results.json         # retrieval results
+├── answer_results.json         # answer results
+├── eval_results.json           # evaluation results
+└── report.txt                  # text report
 ```
 
-## CLI 参数
+## CLI parameters
 
 ```
---dataset TEXT         数据集名称（必需）
---system TEXT         系统名称（必需）
---output PATH         输出目录（默认: results/{dataset}-{system}）
---resume              从断点恢复运行
---debug               开启 Debug 模式
---max-workers N       并发线程数（默认: 10）
---rerank-model MODEL  Rerank 模型名称
---rerank-provider PROVIDER  Rerank 提供商
+--dataset TEXT         dataset name (required)
+--system TEXT          system name (required)
+--output PATH          output directory (default: results/{dataset}-{system})
+--resume               resume from a checkpoint
+--debug                enable Debug mode
+--max-workers N        number of concurrent threads (default: 10)
+--rerank-model MODEL   rerank model name
+--rerank-provider PROVIDER  rerank provider
 ```
 
 ## Leader Board
 
-在 LifeBench（3380 QA）与 LoCoMo 上的准确率（%）。**Micro** 为全部问题的准确率；**Macro** 为九类题型的算术平均。**Gold Evidence**（金标准证据）把标注证据直接喂给答案模型，作为「完美检索」的上界参考，并非记忆系统。LoCoMo 结果不含对抗性问题。
+Accuracy (%) on LifeBench (3380 QA) and LoCoMo. **Micro** is the accuracy over all questions; **Macro** is the arithmetic mean over the nine question types. **Gold Evidence** feeds the annotated evidence directly to the answer model, serving as the upper-bound reference for "perfect retrieval", and is not a memory system. LoCoMo results do not include adversarial questions.
 
-| 记忆系统 | 基础模型 | Micro | Macro | LoCoMo |
+| Memory system | Base model | Micro | Macro | LoCoMo |
 |---|---:|---:|---:|---:|
 | *Gold Evidence* † | DeepSeek-V4-Flash | 97.28 | 95.92 | — |
 | Hindsight | GLM-5.2 | **74.41** | 66.49 | — |
@@ -89,20 +89,20 @@ results/lifebench_locomo_format-mem0/
 | MemU | DeepSeek-V4-Flash | 52.75 | 42.13 | 80.26 |
 | GraphRAG | DeepSeek-V4-Flash | 30.50 | 23.26 | 82.72 |
 
-**粗体**标记该列中记忆系统的最优结果（Gold Evidence 不参与比较）。† 表示 Gold Evidence（金标准证据上界参考）。
+**Bold** marks the best result among memory systems in that column (Gold Evidence is not compared). † denotes Gold Evidence (the gold-evidence upper-bound reference).
 
-完整的分题型（Single-hop / Multi-hop / Temporal / Non-declarative / Knowledge update / Causal / Conflict / Hidden info / Unanswerable）细分见下，也可在[交互式 Leaderboard](https://huggingface.co/spaces/C1754955896/Lifebench-Leaderboard) 中探索与排序。
+The full per-question-type breakdown (Single-hop / Multi-hop / Temporal / Non-declarative / Knowledge update / Causal / Conflict / Hidden info / Unanswerable) is below, and can also be explored and sorted in the [interactive Leaderboard](https://huggingface.co/spaces/C1754955896/Lifebench-Leaderboard).
 
 <details>
-<summary>按基础模型 × 记忆系统 × 题型的完整结果</summary>
+<summary>Full results by base model × memory system × question type</summary>
 
-**SH** Single-hop；**MH** Multi-hop；**TR** Temporal；**ND** Non-declarative；**KU** Knowledge update；**CR** Causal；**CD** Conflict detection；**HI** Hidden information；**UA** Unanswerable。**粗体**为该列记忆系统最优结果（Gold Evidence 不参与比较）。「—」表示未报告。
+**SH** Single-hop; **MH** Multi-hop; **TR** Temporal; **ND** Non-declarative; **KU** Knowledge update; **CR** Causal; **CD** Conflict detection; **HI** Hidden information; **UA** Unanswerable. **Bold** marks the best memory-system result in that column (Gold Evidence is not compared). "—" denotes not reported.
 
 <table>
   <thead>
     <tr>
-      <th>基础模型</th>
-      <th>记忆系统</th>
+      <th>Base model</th>
+      <th>Memory system</th>
       <th>SH</th><th>MH</th><th>TR</th><th>ND</th><th>KU</th><th>CR</th><th>CD</th><th>HI</th><th>UA</th><th>Micro</th><th>Macro</th><th>LoCoMo</th>
     </tr>
   </thead>
@@ -171,21 +171,21 @@ results/lifebench_locomo_format-mem0/
 
 </details>
 
-## 引用
+## Citation
 
-- 📄 **论文**：[LifeBench: A Benchmark for Long-Horizon Multi-Source Memory](https://arxiv.org/abs/2603.03781)（arXiv:2603.03781）
-- 🤗 **数据集**：[LifeBench v2.0](https://huggingface.co/datasets/C1754955896/Lifebenchv2.0)（Hugging Face）
-- 🐙 **数据集仓库**：[LifeBench](https://github.com/1754955896/LifeBench)（GitHub）
+- 📄 **Paper**: [LifeBench: A Benchmark for Long-Horizon Multi-Source Memory](https://arxiv.org/abs/2603.03781) (arXiv:2603.03781)
+- 🤗 **Dataset**: [LifeBench v2.0](https://huggingface.co/datasets/C1754955896/Lifebenchv2.0) (Hugging Face)
+- 🐙 **Dataset repository**: [LifeBench](https://github.com/1754955896/LifeBench) (GitHub)
 
-## 附录
+## Appendix
 
-### 核心概念
+### Core concepts
 
-#### Builder（构建器）
+#### Builder
 
-负责启动被测记忆系统的运行环境（Docker）。每个系统对应一个 Builder：
+Responsible for starting the runtime environment (Docker) of the memory system under test. Each system has a corresponding Builder:
 
-| Builder | 系统 | 启动方式 |
+| Builder | System | Startup method |
 |---------|------|---------|
 | `Mem0Builder` | Mem0 | docker-compose (PostgreSQL + Mem0 Server) |
 | `CogneeBuilder` | Cognee | docker-compose |
@@ -193,9 +193,9 @@ results/lifebench_locomo_format-mem0/
 | `HindsightBuilder` | Hindsight | docker-compose (AlloyDB) |
 | ... | ... | ... |
 
-#### Adapter（适配器）
+#### Adapter
 
-定义框架与记忆系统的统一接口：
+Defines the unified interface between the framework and the memory systems:
 
 ```python
 class BaseAdapter:
@@ -205,38 +205,38 @@ class BaseAdapter:
     async def cleanup(self) -> None
 ```
 
-#### Pipeline（流水线）
+#### Pipeline
 
-四阶段评测流程：
+Four-stage evaluation flow:
 
 ```
 ADD + SEARCH → ANSWER → EVALUATE
-   (按日期交叉)    (生成答案)  (LLM Judge)
+   (interleaved by date)    (generates answers)  (LLM Judge)
 ```
 
-**ADD + SEARCH**：按日期顺序，交叉执行数据摄入与检索
-**ANSWER**：基于检索到的记忆生成答案
-**EVALUATE**：使用 LLM Judge 评估答案质量，支持以下类型：
+**ADD + SEARCH**: interleaves data ingestion and retrieval in date order
+**ANSWER**: generates answers based on the retrieved memories
+**EVALUATE**: uses an LLM Judge to evaluate answer quality, supporting the following types:
 
-- Single_hop、Multi_hop、Temporal、Conflict
-- Unanswerable、Pattern_recognition、Causal
-- Knowledge_update、Hidden_info
+- Single_hop, Multi_hop, Temporal, Conflict
+- Unanswerable, Pattern_recognition, Causal
+- Knowledge_update, Hidden_info
 
-### 添加新系统
+### Adding a new system
 
-1. **实现 Builder**：在 `src/builders/` 中创建 `{system}_builder.py`
-2. **实现 Adapter**：在 `src/adapters/` 中创建 `{system}_adapter.py`
-3. **添加配置**：在 `config/systems/` 中创建 `{system}.yaml`
-4. **注册系统**：在 Builder 和 Adapter 的 registry 中注册
+1. **Implement a Builder**: create `{system}_builder.py` in `src/builders/`
+2. **Implement an Adapter**: create `{system}_adapter.py` in `src/adapters/`
+3. **Add config**: create `{system}.yaml` in `config/systems/`
+4. **Register the system**: register it in the Builder and Adapter registries
 
-### 与 LifeMem/evaluation 的区别
+### Difference from LifeMem/evaluation
 
-| 方面 | LifeMem/evaluation | LifeBench_eval |
+| Aspect | LifeMem/evaluation | LifeBench_eval |
 |------|-------------------|----------------|
-| 项目定位 | 内部评估工具，深度耦合 LifeMem | 通用评估框架，支持多系统 |
-| 适配器接口 | adapter add 接收整个 conversation | add 接收分割好的 message chunk |
-| 运行方式 | 统一 ADD 后再 SEARCH | 边 ADD 边 SEARCH，按日期交叉 |
-| 记忆系统部署 | 基于代码 | 基于 Docker |
-| 断点续跑 | Stage 级别 | Date + QA 级别（更细粒度） |
-| 结果保存 | 最后一次性保存 | 增量保存 |
-| Debug 模式 | 无 | 生成 debug 日志文件 |
+| Project positioning | internal evaluation tool, deeply coupled with LifeMem | general evaluation framework, multi-system |
+| Adapter interface | adapter add receives the whole conversation | add receives pre-split message chunks |
+| Run mode | unified ADD then SEARCH | interleaved ADD/SEARCH, by date |
+| Memory system deployment | code-based | Docker-based |
+| Resumable runs | stage-level | Date + QA level (finer granularity) |
+| Result saving | saved once at the end | incremental save |
+| Debug mode | none | produces debug log files |

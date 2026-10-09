@@ -1,20 +1,20 @@
-# 配置目录
+# Config Directory
 
-存放评测框架和被测记忆系统的配置文件。
+Stores configuration files for the evaluation framework and the memory systems under test.
 
-## 目录结构
+## Directory structure
 
 ```
 config/
-├── systems/          # 被测系统的配置文件
-└── datasets/         # 数据集元数据配置
+├── systems/          # config files for the systems under test
+└── datasets/         # dataset metadata config
 ```
 
-## systems/ — 被测系统配置
+## systems/ — system-under-test config
 
-每个记忆系统对应一个 YAML 配置文件，定义 Builder 和 Adapter 的参数：
+Each memory system has a corresponding YAML config file, defining the Builder and Adapter parameters:
 
-| 文件 | 系统 |
+| File | System |
 |------|------|
 | `mem0.yaml` | Mem0 |
 | `cognee.yaml` | Cognee |
@@ -30,17 +30,17 @@ config/
 | `zep_cloud.yaml` | Zep Cloud |
 | `lifemem.yaml` | LifeMem |
 
-### 配置格式
+### Config format
 
 ```yaml
-builder: "mem0"                           # Builder 类型
-docker_compose: "systems/mem0/server/docker-compose.yaml"  # Docker compose 文件路径
-env_template: "systems/mem0/server/.env.example"          # 环境变量模板
-docker_wait: 30                           # 等待 Docker 服务就绪的秒数
+builder: "mem0"                           # Builder type
+docker_compose: "systems/mem0/server/docker-compose.yaml"  # Docker compose file path
+env_template: "systems/mem0/server/.env.example"          # environment variable template
+docker_wait: 30                           # seconds to wait for the Docker service to be ready
 ```
 
-> **注意**：带 `_cloud` 或 `_blocking` 的配置文件包含敏感 API Key，已加入 `.gitignore`。
+> **Note**: config files with `_cloud` or `_blocking` contain sensitive API keys and have been added to `.gitignore`.
 
-## datasets/ — 数据集元数据
+## datasets/ — dataset metadata
 
-定义各数据集的元信息，如样本配置、评估类型等。
+Defines each dataset's metadata, such as sample config, evaluation type, etc.

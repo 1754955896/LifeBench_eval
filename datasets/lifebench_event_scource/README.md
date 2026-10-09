@@ -1,23 +1,23 @@
 # lifebench_event_scource
 
-LifeBench 的「事件粒度」数据源目录。以三人（`孙雨薇` / `于晓薇` / `冯浩然`）2025 全年的生活数据为对象，提供从「按天汇总」到「按事件」两种粒度的会话数据。
+LifeBench's "event-granularity" data-source directory. Built on three people (`孙雨薇` / `于晓薇` / `冯浩然`) across the whole of 2025, it provides conversation data at two granularities: "per-day summary" and "per-event".
 
-## 目录结构
+## Directory structure
 
 ```
 lifebench_event_scource/
 ├── files/
-│   ├── daily_event_{pinyin}.json        # 源事件数据（最细粒度，每人一份）
-│   ├── lifebench_raw_{pinyin}.json      # 原始样本：按天组织（每人一份）
-│   ├── build_raw_event_persons.py       # 从 3380QA 抽取各人原始样本
-│   └── build_lifebench_event.py         # 转换脚本：由 raw + daily_event 生成 lifebench_event.json
-├── lifebench_event.json                 # 事件粒度样本（生成产物，3 个 sample）
+│   ├── daily_event_{pinyin}.json        # source event data (finest granularity, one per person)
+│   ├── lifebench_raw_{pinyin}.json      # raw samples: organized by day (one per person)
+│   ├── build_raw_event_persons.py       # extract each person's raw sample from 3380QA
+│   └── build_lifebench_event.py         # conversion script: from raw + daily_event to lifebench_event.json
+├── lifebench_event.json                 # event-granularity samples (generated, 3 samples)
 └── README.md
 ```
 
-## 人物构成
+## Person composition
 
-| 人物 | daily_event 事件数 | raw QA | raw 条数 |
+| Person | daily_event event count | raw QA | raw entries |
 |---|---:|---:|---:|
 | 孙雨薇 | 5716 | 328 | 7466 |
 | 于晓薇 | 5931 | 332 | 7097 |
@@ -25,26 +25,26 @@ lifebench_event_scource/
 
 ---
 
-## 文件说明
+## File descriptions
 
-### files/daily_event_{pinyin}.json —— 源事件数据（每人一份）
+### files/daily_event_{pinyin}.json — source event data (one per person)
 
-逐事件记录某人 2025 年的生活，覆盖 `2025-01-01` ~ `2025-12-31`。
+Records someone's 2025 life event-by-event, covering `2025-01-01` ~ `2025-12-31`.
 
-每条事件的字段（三人格式一致）：
+Fields of each event (identical format across the three people):
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `event_id` | 全局编号（按日期顺序递增，每人从 1 起） |
-| `name` | 事件名称 |
-| `date` | 时间区间列表，如 `"2025-01-01 08:15:00至2025-01-01 09:25:00"`；个别事件含多个时段 |
-| `type` | 事件类别 |
-| `description` | 事件描述 |
-| `participant` | 参与者列表 `[{ "name", "relation" }]` |
-| `location` | 地点 |
-| `atomic_id` | 原子事实编号列表（部分事件为空） |
+| `event_id` | global number (increments by date order, starting from 1 per person) |
+| `name` | event name |
+| `date` | time-range list, e.g. `"2025-01-01 08:15:00至2025-01-01 09:25:00"`; some events span multiple periods |
+| `type` | event category |
+| `description` | event description |
+| `participant` | participant list `[{ "name", "relation" }]` |
+| `location` | location |
+| `atomic_id` | atomic-fact number list (empty for some events) |
 
-示例（`孙雨薇`）：
+Example (`孙雨薇`):
 
 ```json
 {
@@ -63,14 +63,14 @@ lifebench_event_scource/
 }
 ```
 
-### files/lifebench_raw_{pinyin}.json —— 原始样本（每人一份）
+### files/lifebench_raw_{pinyin}.json — raw samples (one per person)
 
-每人 1 个样本（`sample_id` 为中文名），会话按天拆分，结构与 `lifebench_dense` 的 raw 一致。
+One sample per person (`sample_id` is the Chinese name), conversation split by day, structure consistent with `lifebench_dense`'s raw.
 
-- `conversation`：`speaker_a` / `speaker_b`，以及 365 个 `session_N_date_time` + `session_N` 键值对。
-- 每个 `session_N` 是当天的全部记录，条目为 `{speaker, dia_id, text}`。
+- `conversation`: `speaker_a` / `speaker_b`, plus 365 `session_N_date_time` + `session_N` key-value pairs.
+- Each `session_N` is the full record for that day, with entries `{speaker, dia_id, text}`.
 
-单条记录示例：
+Single-record example:
 
 ```json
 {
@@ -80,11 +80,11 @@ lifebench_event_scource/
 }
 ```
 
-### lifebench_event.json —— 事件粒度样本（生成产物）
+### lifebench_event.json — event-granularity samples (generated)
 
-由 `daily_event_*.json` + `lifebench_raw_*.json` 生成，**3 个 sample**，共 **17369** 条事件记录（5716 + 5931 + 5722）。
+Generated from `daily_event_*.json` + `lifebench_raw_*.json`, **3 samples**, **17369** event records in total (5716 + 5931 + 5722).
 
-每条记录：
+Each record:
 
 ```json
 {
@@ -94,64 +94,64 @@ lifebench_event_scource/
 }
 ```
 
-- `dia_id`：`{日期}_event{编号}`，编号按天从 1 重新计数。
-- `text`：`{人名}在{时间区间}的活动记录：{description}`，时间区间具体到秒；含多个时段的事件用 `、` 连接。
-- `qa` 原样保留自对应 raw，三人合计 **1008** 条。
-- 空 session（当日无事件）共 4 个：孙雨薇 `2025-10-06`、于晓薇 `2025-11-08`、冯浩然 `2025-08-05` / `2025-12-25`。
+- `dia_id`: `{date}_event{number}`, the number restarts from 1 each day.
+- `text`: `{person name}在{time range}的活动记录：{description}`, time range precise to the second; multi-period events are joined with `、`.
+- `qa` is preserved as-is from the corresponding raw, **1008** entries across the three people.
+- 4 empty sessions (no events that day): 孙雨薇 `2025-10-06`, 于晓薇 `2025-11-08`, 冯浩然 `2025-08-05` / `2025-12-25`.
 
-## QA 字段
+## QA fields
 
-三个样本的 `qa` 均为列表（328 / 332 / 348 条），单条结构：
+All three samples' `qa` are lists (328 / 332 / 348 entries), with a single-entry structure:
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `question` | 问题（含提问时间前缀） |
-| `answer` | 标准答案 |
-| `evidence` | 引用的 `dia_id` 列表 |
-| `category` | 问题类别编码（多标签，整数 0–8） |
-| `question_type` | 问题类型（多标签），如 `Single_hop`、`Multi_hop`、`Temporal`、`Conflict`、`Causal`、`Pattern_recognition(Non-declarative)`、`Knowledge_update`、`Unanswerable` |
-| `question_id` | 问题唯一 ID |
-| `ask_time` | 提问时间 |
-| `score_points` | 评分点列表 `[{ "description", "score" }]` |
+| `question` | the question (with ask-time prefix) |
+| `answer` | the golden answer |
+| `evidence` | the cited `dia_id` list |
+| `category` | question category encoding (multi-label, integers 0–8) |
+| `question_type` | question type (multi-label), e.g. `Single_hop`, `Multi_hop`, `Temporal`, `Conflict`, `Causal`, `Pattern_recognition(Non-declarative)`, `Knowledge_update`, `Unanswerable` |
+| `question_id` | question unique ID |
+| `ask_time` | ask time |
+| `score_points` | scoring-point list `[{ "description", "score" }]` |
 
-> 注意：`lifebench_event.json` 的 `qa.evidence` 仍引用 raw 中旧的 `dia_id`（如 `agent_chat58`），这些编号在事件粒度样本中已不存在，尚未对齐。
+> Note: `lifebench_event.json`'s `qa.evidence` still cites the old `dia_id`s in the raw (e.g. `agent_chat58`); these numbers no longer exist in the event-granularity samples and have not been aligned yet.
 
-## 数据关系
+## Data relationships
 
 ```
-daily_event_{pinyin}.json ──(生成 conversation 的 session 内容)──▶ lifebench_event.json
-lifebench_raw_{pinyin}.json ──(提供样本骨架：speaker / session 日期 / qa)──▶ lifebench_event.json
+daily_event_{pinyin}.json ──(generates the conversation's session content)──▶ lifebench_event.json
+lifebench_raw_{pinyin}.json ──(provides the sample skeleton: speaker / session dates / qa)──▶ lifebench_event.json
 ```
 
-## 转换脚本
+## Conversion scripts
 
-- `build_raw_event_persons.py` — 从 `lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA.json` 抽取各人原始样本，生成 `files/lifebench_raw_{pinyin}.json`。
-- `build_lifebench_event.py` — 由 per-person 的 `daily_event_{pinyin}.json` + `lifebench_raw_{pinyin}.json` 生成 `lifebench_event.json`。默认构建三人（`PERSONS` 字典）；`-e` / `-r` 可切换到单文件模式。
+- `build_raw_event_persons.py` — extracts each person's raw sample from `lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA.json`, producing `files/lifebench_raw_{pinyin}.json`.
+- `build_lifebench_event.py` — generates `lifebench_event.json` from per-person `daily_event_{pinyin}.json` + `lifebench_raw_{pinyin}.json`. Builds the three people by default (`PERSONS` dict); `-e` / `-r` switch to single-file mode.
 
 ```bash
-# 抽取原始样本（默认三人）
+# extract raw samples (default: three people)
 python files/build_raw_event_persons.py
 
-# 生成事件粒度样本（默认三人）
+# generate event-granularity samples (default: three people)
 python files/build_lifebench_event.py
 
-# 仅某一人
+# just one person
 python files/build_lifebench_event.py --sample-id 孙雨薇
 ```
 
-| 参数 | 说明 | 默认值 |
+| Parameter | Description | Default |
 | --- | --- | --- |
-| `-e, --events` | 单文件模式：源事件数据路径 | 无（默认按 `PERSONS` 逐人取 `daily_event_{pinyin}.json`） |
-| `-r, --raw` | 单文件模式：原始样本路径 | 无（默认按 `PERSONS` 逐人取 `lifebench_raw_{pinyin}.json`） |
-| `-o, --output` | 输出路径 | `../lifebench_event.json` |
-| `--speaker` | 覆盖 speaker 名称（仅单文件模式） | 取样本的 `sample_id` |
-| `--sample-id` | 仅转换指定样本 | 转换 `PERSONS` 全部 |
-| `--indent` | JSON 缩进空格数 | `2` |
+| `-e, --events` | single-file mode: source event data path | none (default takes `daily_event_{pinyin}.json` per `PERSONS`) |
+| `-r, --raw` | single-file mode: raw sample path | none (default takes `lifebench_raw_{pinyin}.json` per `PERSONS`) |
+| `-o, --output` | output path | `../lifebench_event.json` |
+| `--speaker` | override the speaker name (single-file mode only) | the sample's `sample_id` |
+| `--sample-id` | only convert the specified sample | convert all in `PERSONS` |
+| `--indent` | JSON indent spaces | `2` |
 
-脚本内置转换规则（与上文 `lifebench_event.json` 一致）：
+Built-in conversion rules (consistent with `lifebench_event.json` above):
 
-1. 保留原始样本骨架（`sample_id` / `speaker_a` / `speaker_b` / `qa` / 各 session 日期）。
-2. 每个 `session_N` 的内容替换为当天的「事件记录」，事件按 `event_id` 排序；同一事件跨多个时段（同天）只计一次。
-3. `dia_id = "{日期}_event{编号}"`，编号按天从 1 重新计数。
-4. `text = "{人名}在{时间区间}的活动记录：{description}"`，时间区间具体到秒，多时段用 `、` 连接。
-5. 某天无事件时，对应 session 为空列表。
+1. Keep the raw sample skeleton (`sample_id` / `speaker_a` / `speaker_b` / `qa` / each session date).
+2. Each `session_N`'s content is replaced with that day's "event records", events sorted by `event_id`; an event spanning multiple periods (same day) counts only once.
+3. `dia_id = "{date}_event{number}"`, number restarts from 1 each day.
+4. `text = "{person name}在{time range}的活动记录：{description}"`, time range precise to the second, multi-periods joined with `、`.
+5. On a day with no events, the corresponding session is an empty list.
