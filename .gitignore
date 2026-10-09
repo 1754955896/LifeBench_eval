@@ -43,11 +43,12 @@ systems/*/
 !systems/hindsight/
 !systems/cognee/
 !systems/mem0/
+!systems/graphiti/
 
 # System config files (contain API keys)
 config/systems/memos_cloud_blocking.yaml
 config/systems/zep_cloud.yaml
-config/systems/graphrag.yaml
+
 # OS
 .DS_Store
 Thumbs.db

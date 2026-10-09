@@ -1,0 +1,61 @@
+# GraphRAG System Configuration (Microsoft GraphRAG 3.x)
+# Uses graphrag Python API for index/update and DRIFT search.
+#
+# Requires Python >=3.11. Activate the venv before running:
+#   cd LifeBench_eval
+#   systems/graphrag/.venv/Scripts/activate
+#   python cli.py --dataset lifebench --system graphrag --smoke
+
+name: "graphrag"
+version: "2.0"
+description: "Microsoft GraphRAG with DRIFT search and incremental indexing — fast mode"
+
+adapter: "graphrag"
+builder: "graphrag"
+
+# LLM settings for indexing and search
+llm:
+  model: "${LLM_MODEL:deepseek-v4-flash}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://api.deepseek.com}"
+  temperature: 0
+  max_tokens: 32768
+
+# Embedding settings
+embedding:
+  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
+  api_key: "${VECTORIZE_API_KEY}"
+  base_url: "${VECTORIZE_BASE_URL:https://api.siliconflow.cn/v1}"
+  dimension: "${VECTORIZE_DIMENSIONS:2560}"
+
+# Indexing — tuned for maximum entity/relationship recall
+index:
+  chunk_size: 1000
+  chunk_overlap: 250
+  max_gleanings: 1           # single gleaning pass
+  concurrent_requests: 25
+  report_max_length: 2000
+  report_max_input_length: 8000
+  desc_max_length: 500
+  claims_gleanings: 0        # claims disabled (set 0 to skip)
+
+# Search — DRIFT with fast parameters
+search:
+  method: "drift"
+  top_k: 40
+  community_level: 2
+  primer_folds: 2            # fast: fewer parallel decomposition
+  drift_k_followups: 5       # fast: fewer communities per iteration
+  n_depth: 1                 # fast: single pass, no recursion
+  local_search_text_unit_prop: 0.5
+  local_search_community_prop: 0.25
+  local_search_top_k_entities: 10
+  local_search_top_k_relationships: 10
+
+# Answer configuration
+answer:
+  temperature: 0.3
+  max_tokens: 32768
+
+# Sample processing
+sample_parallel: true
