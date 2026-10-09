@@ -2,7 +2,7 @@
 
 [![🤗 Hugging Face Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-orange?style=flat-square)](https://huggingface.co/datasets/C1754955896/Lifebenchv2.0)
 [![arXiv](https://img.shields.io/badge/arXiv-2603.03781-b31b1b?style=flat-square)](https://arxiv.org/abs/2603.03781)
-[![GitHub](https://img.shields.io/badge/GitHub-LifeBench__eval-181717?style=flat-square&logo=github)](https://github.com/1754955896/LifeBench_eval)
+[![GitHub](https://img.shields.io/badge/GitHub-LifeBench-181717?style=flat-square&logo=github)](https://github.com/1754955896/LifeBench)
 
 Used to evaluate the performance of memory systems such as Mem0 in real-life scenarios.
 
