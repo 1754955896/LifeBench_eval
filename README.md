@@ -8,7 +8,7 @@ Used to evaluate the performance of memory systems such as Mem0 in real-life sce
 
 ## Introduction
 
-LifeBench_eval is a general-purpose memory-system evaluation framework, supporting:
+LifeBench_eval is a general-purpose memory-system evaluation framework, supporting: 
 
 - **Multi-system evaluation**: Mem0, Cognee, Graphiti, Hindsight, EverMemos, MindMemos, and more
 - **Three-stage pipeline**: ADD + SEARCH → ANSWER → EVALUATE
