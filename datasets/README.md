@@ -9,7 +9,7 @@ datasets/
 ├── lifebench_locomo_format/       # LifeBench LoCoMo standard-format dataset
 ├── lifebench_locomo_3people/      # 3-person conversation version of LifeBench LoCoMo
 ├── lifebench_offline/             # LifeBench offline version (ask_time uniformly set to 2025-12-31)
-├── lifebench_locomo_cutoff/       # time-truncated variants (sessions + QA up to 2025-03-15 / 2025-06-15 / 2025-09-15)
+├── lifebench_locomo_cutoff/       # time-truncated variants (sessions + QA up to 2025-03-15 / 2025-06-15 / 2025-08-15 / 2025-09-15)
 ├── locomo/                        # original LoCoMo data
 └── smoke/                          # smoke-test dataset
 ```
@@ -40,6 +40,7 @@ Time-truncated variants generated from `lifebench_locomo_format` by `build_cutof
 
 - `lifebench_locomo_cutoff_2025-03-15.json` — 10 persons / 740 sessions / 29 QA
 - `lifebench_locomo_cutoff_2025-06-15.json` — 10 persons / 1660 sessions / 87 QA
+- `lifebench_locomo_cutoff_2025-08-15.json` — 10 persons / 2270 sessions / 51 QA
 - `lifebench_locomo_cutoff_2025-09-15.json` — 10 persons / 2580 sessions / 28 QA (于晓薇 has 0 QA on that date)
 
 ### locomo/

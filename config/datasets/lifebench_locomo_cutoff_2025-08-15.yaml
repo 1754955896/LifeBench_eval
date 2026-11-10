@@ -1,0 +1,23 @@
+# LifeBench Locomo Cutoff Dataset Configuration
+# Sessions up to 2025-08-15, QA only for 2025-08-15
+
+name: "lifebench_locomo_cutoff_2025-08-15"
+version: "1.0"
+description: "Time-truncated LifeBench: 10 persons / 227 sessions each, sessions <= 2025-08-15, QA only 2025-08-15 (51 QA)"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_locomo_cutoff/lifebench_locomo_cutoff_2025-08-15.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 3

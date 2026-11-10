@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[2]
 SOURCE = REPO / "datasets" / "lifebench_locomo_format" / "lifebench_locomo_conversation_format_v2.0_3380QA.json"
 OUTPUT_DIR = Path(__file__).resolve().parent
 
-CUTOFFS = ["2025-03-15", "2025-06-15", "2025-09-15"]
+CUTOFFS = ["2025-03-15", "2025-06-15", "2025-08-15", "2025-09-15"]
 SESSION_DATE_RE = re.compile(r"session_(\d+)_date_time")
 
 
