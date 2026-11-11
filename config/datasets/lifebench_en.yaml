@@ -1,0 +1,25 @@
+# LifeBench Dataset Configuration (English release)
+# Multi-source life memory benchmark
+
+name: "lifebench_en"
+version: "2.0"
+description: "Multi-source life memory benchmark, English release, 10 persons / 3380 QA"
+
+# Memory language setting
+memory_language: "en"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_locomo_format/lifebench_locomo_conversation_format_v2.0_3380QA_en.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  # Judge prompt language: "en" is the English translation of the original judge prompt.
+  judge_language: "en"
+  llm:
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 3

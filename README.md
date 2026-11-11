@@ -44,6 +44,14 @@ python cli.py --dataset lifebench_locomo_format --system mem0 --resume
 python cli.py --dataset lifebench_locomo_format --system mem0 --debug
 ```
 
+#### English release
+
+The dataset's English release (`data_en/`, and `locomo_format/..._3380QA_en.json` on Hugging Face) runs with the same pipeline and the same judge method. `--dataset lifebench_en` reads the English file and grades with the English judge prompt, a direct translation of the original (`evaluation.judge_language: "en"`; the default stays `"zh"`):
+
+```bash
+python cli.py --dataset lifebench_en --system mem0
+```
+
 ### 3. View results
 
 Evaluation results are saved in the `results/{dataset}-{system}/` directory:

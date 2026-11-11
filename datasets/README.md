@@ -21,6 +21,7 @@ datasets/
 LifeBench's standard-format LoCoMo dataset.
 
 - `lifebench_locomo_conversation_format_v2.0_3380QA.json` — primary dataset (~27MB)
+- `lifebench_locomo_conversation_format_v2.0_3380QA_en.json` — the English release of the primary dataset (~31MB), from `locomo_format/` of the Hugging Face dataset `C1754955896/Lifebenchv2.0`; used by `config/datasets/lifebench_en.yaml`
 
 ### lifebench_locomo_3people/
 

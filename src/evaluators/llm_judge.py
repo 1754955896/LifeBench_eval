@@ -31,10 +31,10 @@ def _normalize_types(value) -> List[str]:
     return []
 
 
-def _render_score_points(score_points: List[dict]) -> str:
+def _render_score_points(score_points: List[dict], language: str = "zh") -> str:
     """Render score points as a numbered, weight-free list for the judge prompt."""
     if not score_points:
-        return "（本题无评分点清单，只判整体 label）"
+        return PROMPTS[language]["no_score_points"]
     lines = []
     for i, sp in enumerate(score_points, 1):
         desc = (sp or {}).get("description", "")
@@ -129,6 +129,94 @@ USER_PROMPT_TEMPLATE = """给一条"系统生成的答案"打分。你要产出�
 point_hits 的条目数量和顺序必须与输入的评分点完全一致。label 必须正好是 "CORRECT" 或 "WRONG"。
 reasoning 和 description 字段内**不要使用英文双引号**（会破坏 JSON）；如需引用原文请用中文引号「」。"""
 
+SYSTEM_PROMPT_EN = """You are a grader for a memory-system benchmark: practical, not nitpicking. The only standard for whether an answer
+is right is "did it get the core of what the question asks" - if the core is right it is correct; the answer does not need to be
+exhaustive, explain its basis, or cover every related point. But a wrong, fabricated, or off-topic answer never gets credit. The content being graded is English."""
+
+USER_PROMPT_TEMPLATE_EN = """Grade one "system-generated answer". Produce two things: (A) an overall correct/wrong label, (B) per-score-point hits.
+
+## Input
+- Question: {question}
+- Ask time (the moment the question was asked): {ask_time}
+- Question type: {question_types}
+- Reference answer: {reference_answer}
+- Score points (grading checklist; weights are hidden, do not guess them):
+{score_points}
+- Generated answer to grade: {generated_answer}
+
+## General grading principles (practical, lenient: core right means correct)
+- **Core right means correct**: as long as the generated answer gets the **core content / answer** of the question right, judge it CORRECT,
+  **even if** it misses secondary points, does not give every related reason, does not cite evidence sources, does not explain its reasoning,
+  does not restate premises already given in the question, or does not reproduce a date label or event name from the reference answer word for word. None of these **affect correctness**.
+- Paraphrase, rewording, date/number format differences or reasonable rounding, and additional correct information are **not penalised**.
+- **But never be lax** (judge these WRONG): core fact wrong, mixing up people or things, fabrication, answering a different question,
+  refusing when it should answer (answering "cannot be determined" when the records do contain the answer). Merely touching the topic without the correct core is also wrong.
+  "Missing secondary points" is tolerated, but "substituting a vague generalisation for the specific content asked" (e.g. asked what specific thing was done, answering only 'studied a bit / took care of some things') = core not answered = WRONG.
+- **Key distinction: missing is not wrong**. Leaving out secondary content / not saying everything = tolerated, no penalty; but a key fact the answer **states incorrectly**
+  (a date/number/person/place **given as the wrong value**, e.g. a date off by two days, the wrong person) = WRONG, even if the core is close.
+  Reasonable rounding or approximation (e.g. 44 vs 44.1, half an hour vs about 30 minutes) is not a wrong answer.
+
+## Time semantics
+{ask_time} is the moment the question is asked; the relevant events all precede it. The answer should reflect the state **as of that moment**;
+relative times ("last month" / "currently", etc.) are resolved against the ask time.
+
+## A. Overall label (judge the core, leniently) - this is the main verdict
+Judge whether the generated answer **correctly answers the core of the question**. Core right -> CORRECT; core wrong / missing / fabricated / wrongly refused -> WRONG.
+The question type determines what the "core" is:
+- Unanswerable: core = whether it should refuse. An appropriate refusal / "not in the records" / "cannot be determined" = CORRECT; fabricating a specific answer = WRONG.
+- Knowledge_update: core = whether the state value **at the ask time** is right (not the latest overall).
+- Conflict: core = whether the **final resolved value** is right. Giving the right value is CORRECT; it is **not required** to show how the conflicting information was identified or excluded;
+  but answering the wrong value from the conflict (e.g. blindly taking the latest when the latest is not the correct value) = WRONG.
+- Temporal: core = whether the asked date / interval / duration / ordering is right (format lenient).
+- Multi_hop / Causal: core = whether the answer / causation of the main line of the question is right. Main facts or causation right is CORRECT;
+  missing secondary links does not make it wrong; only a wrong main line or essentially no answer is WRONG.
+- Pattern_recognition / Hidden_info: core = whether the direction / conclusion of the generalisation is right. Right conclusion is CORRECT,
+  **no need to enumerate** every supporting detail; only a reversed direction or wrong conclusion is WRONG.
+- Evolution_tracking: core = whether the **evolution trajectory / stages / key milestones over time** of a main line are captured. Covering the main stages in the right order / direction
+  is CORRECT, **no need to enumerate** every node; only giving a single static fact, missing the main evolution, or reversing the order / direction of stages is WRONG.
+- Single_hop: core = whether the fact asked for is right.
+
+## B. Per score point (computes the weighted score, also lenient) - measures only "how complete", does not decide A
+Judge each score point hit/miss (decoupled from A: missing a few points in B does not affect whether A is CORRECT):
+- hit = the answer conveys the **factual content** of that point (paraphrase, equivalent wording, and reasonable approximation all count).
+- **Do not** judge a point a miss because a **meta-requirement unrelated to correctness** attached to it is unmet - such as "cite the evidence source / explain the reasoning or exclusion process / restate the question's premise / give a date or event-name label verbatim"; look only at whether the point's **factual content** was answered.
+- The point's fact genuinely not answered, or answered wrong -> miss. Touching the topic without the point's fact -> miss.
+- If the "Score points" above are empty (no checklist), output point_hits as an empty array [].
+
+## Priority across multiple question types
+1. Unanswerable is highest - if this question expects an appropriate refusal, judge it as UA.
+2. Knowledge_update overrides the "latest = true" intuition.
+3. Otherwise combine the applicable question types to judge the core.
+
+## Output (output JSON only, nothing else)
+{{"reasoning": "<one or two sentences in English, first giving the reason the core is right or wrong>",
+  "point_hits": [{{"description": "<copy the score point verbatim>", "hit": true}}],
+  "label": "CORRECT"}}
+
+The number and order of point_hits entries must exactly match the input score points. label must be exactly "CORRECT" or "WRONG".
+Inside the reasoning and description fields **do not use double quotes** (they break the JSON); to quote the source, use single quotes."""
+
+# Judge prompts per language. "zh" is the original evaluation and the
+# default; "en" is a direct translation of it for the English release of
+# the dataset (data_en / *_en.json). The method is identical in both:
+# same inputs, same rules, same output contract.
+PROMPTS = {
+    "zh": {
+        "system": SYSTEM_PROMPT,
+        "user": USER_PROMPT_TEMPLATE,
+        "no_score_points": "（本题无评分点清单，只判整体 label）",
+        "no_ask_time": "（未提供）",
+        "no_question_type": "（未标注）",
+    },
+    "en": {
+        "system": SYSTEM_PROMPT_EN,
+        "user": USER_PROMPT_TEMPLATE_EN,
+        "no_score_points": "(this question has no score-point checklist; judge the overall label only)",
+        "no_ask_time": "(not provided)",
+        "no_question_type": "(not labelled)",
+    },
+}
+
 
 @register_evaluator("llm_judge")
 class LLMJudge(BaseEvaluator):
@@ -147,6 +235,11 @@ class LLMJudge(BaseEvaluator):
             raise ValueError("evaluation.num_runs must be at least 1")
         if self.num_runs % 2 == 0:
             raise ValueError("evaluation.num_runs must be odd for majority vote")
+        self.judge_language = str(config.get("judge_language", "zh"))
+        if self.judge_language not in PROMPTS:
+            raise ValueError(
+                f"evaluation.judge_language must be one of {sorted(PROMPTS)}"
+            )
         self.max_retries = int(config.get("max_retries", 3))
         if self.max_retries < 1:
             raise ValueError("evaluation.max_retries must be at least 1")
@@ -240,7 +333,7 @@ class LLMJudge(BaseEvaluator):
         """Evaluate a single answer result using LLM judge."""
         meta = ar.metadata or {}
         question_types = _normalize_types(meta.get("question_type"))
-        ask_time = meta.get("ask_time", "") or "（未提供）"
+        ask_time = meta.get("ask_time", "") or PROMPTS[self.judge_language]["no_ask_time"]
         score_points = meta.get("score_points") or []
 
         verdicts = []
@@ -316,12 +409,13 @@ class LLMJudge(BaseEvaluator):
         Retries the LLM call when it returns an empty response, unparseable
         output, or a bad label (transient judge failures).
         """
-        user_prompt = USER_PROMPT_TEMPLATE.format(
+        prompts = PROMPTS[self.judge_language]
+        user_prompt = prompts["user"].format(
             question=question,
             ask_time=ask_time,
-            question_types=", ".join(question_types) if question_types else "（未标注）",
+            question_types=", ".join(question_types) if question_types else prompts["no_question_type"],
             reference_answer=reference_answer,
-            score_points=_render_score_points(score_points),
+            score_points=_render_score_points(score_points, self.judge_language),
             generated_answer=generated_answer,
         )
 
@@ -333,7 +427,7 @@ class LLMJudge(BaseEvaluator):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompts["system"]},
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0,
