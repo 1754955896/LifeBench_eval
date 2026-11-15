@@ -1,0 +1,61 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+
+# Output & results
+output/
+results/
+results_clean/*/
+.cognee/
+
+
+# Project subdirectories
+tests/
+
+# Ignore all systems subdirectories except the allowed ones
+systems/*/
+
+# LifeBench systems - explicitly keep these
+
+!systems/MindMemOS/
+!systems/EverMemOS_bz/
+!systems/hindsight/
+!systems/cognee/
+!systems/mem0/
+!systems/graphiti/
+
+# System config files (contain API keys)
+config/systems/memos_cloud_blocking.yaml
+config/systems/zep_cloud.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+docs/
+
+systems/*/.env
+systems/*/*.log
+systems/*/api*.log

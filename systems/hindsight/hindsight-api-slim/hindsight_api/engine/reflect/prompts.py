@@ -1,0 +1,927 @@
+"""
+System prompts for the reflect agent.
+
+The reflect agent uses hierarchical retrieval:
+1. search_mental_models - User-curated summaries (highest quality)
+2. search_observations - Consolidated knowledge with freshness awareness
+3. recall - Raw facts as ground truth fallback
+"""
+
+import json
+from typing import Any
+
+from .tokenization import count_cl100k_tokens
+
+# Fraction of max_context_tokens reserved for tool results in the final synthesis prompt.
+# The remainder covers the system prompt, question, bank context, and output tokens.
+_FINAL_PROMPT_CONTEXT_FRACTION = 0.8
+
+_DEFAULT_ROLE = "You are a reflection agent that answers questions by reasoning over retrieved memories."
+_DEFAULT_FINAL_ROLE = "You are a thoughtful assistant that synthesizes answers from retrieved memories."
+
+
+def _extract_directive_rules(directives: list[dict[str, Any]]) -> list[str]:
+    """Extract directive rules as a list of strings."""
+    rules = []
+    for directive in directives:
+        name = directive.get("name", "")
+        content = directive.get("content", "")
+        if content:
+            rules.append(f"**{name}**: {content}" if name else content)
+    return rules
+
+
+def build_directives_section(directives: list[dict[str, Any]]) -> str:
+    """Build the directives section for the system prompt.
+
+    Directives are hard rules that MUST be followed in all responses.
+    """
+    if not directives:
+        return ""
+
+    rules = _extract_directive_rules(directives)
+    if not rules:
+        return ""
+
+    parts = [
+        "## DIRECTIVES (MANDATORY)",
+        "These are hard rules you MUST follow in ALL responses:",
+        "",
+    ]
+
+    for rule in rules:
+        parts.append(f"- {rule}")
+
+    parts.extend(
+        [
+            "",
+            "NEVER violate these directives, even if other context suggests otherwise.",
+            "IMPORTANT: Do NOT explain or justify how you handled directives in your answer. Just follow them silently.",
+            "",
+        ]
+    )
+    return "\n".join(parts)
+
+
+def build_directives_reminder(directives: list[dict[str, Any]]) -> str:
+    """
+    Build a reminder section for directives to place at the end of the prompt.
+
+    Args:
+        directives: List of directive mental models with observations
+    """
+    if not directives:
+        return ""
+
+    rules = _extract_directive_rules(directives)
+    if not rules:
+        return ""
+
+    parts = [
+        "",
+        "## REMINDER: MANDATORY DIRECTIVES",
+        "Before responding, ensure your answer complies with ALL of these directives:",
+        "",
+    ]
+
+    for i, rule in enumerate(rules, 1):
+        parts.append(f"{i}. {rule}")
+
+    parts.append("")
+    parts.append("Your response will be REJECTED if it violates any directive above.")
+    parts.append("Do NOT include any commentary about how you handled directives - just follow them.")
+    return "\n".join(parts)
+
+
+def build_system_prompt_for_tools(
+    bank_profile: dict[str, Any],
+    context: str | None = None,
+    directives: list[dict[str, Any]] | None = None,
+    has_mental_models: bool = False,
+    include_observations: bool = True,
+    budget: str | None = None,
+) -> str:
+    """
+    Build the system prompt for tool-calling reflect agent.
+
+    The agent uses hierarchical retrieval:
+    1. search_mental_models - User-curated summaries (try first, if available)
+    2. search_observations - Consolidated knowledge with freshness
+    3. recall - Raw facts as ground truth
+
+    The retrieval-strategy and workflow sections are built to match the tools
+    actually exposed to the LLM — mentioning a tool the agent has disabled
+    causes weaker LLMs to either hallucinate the call (rejected by the agent)
+    or give up with "I cannot find any information…" (see #1724).
+
+    Args:
+        bank_profile: Bank profile with name and mission
+        context: Optional additional context
+        directives: Optional list of directive mental models to inject as hard rules
+        has_mental_models: Whether the bank has any mental models (skip if not)
+        include_observations: Whether search_observations is in the tool list.
+        budget: Search depth budget - "low", "mid", or "high". Controls exploration thoroughness.
+    """
+    name = bank_profile.get("name", "Assistant")
+    mission = bank_profile.get("mission", "")
+
+    parts = []
+
+    # Anti-hallucination rule at the very top
+    parts.extend(
+        [
+            "CRITICAL: You MUST ONLY use information from retrieved tool results. NEVER make up names, people, events, or entities.",
+            "",
+        ]
+    )
+
+    # Inject directives after anti-hallucination rule
+    if directives:
+        parts.append(build_directives_section(directives))
+
+    parts.extend(
+        [
+            mission.strip() if mission else _DEFAULT_ROLE,
+            "",
+            "Answer the user's question by reasoning over retrieved memories.",
+            "",
+        ]
+    )
+
+    parts.extend(
+        [
+            "## LANGUAGE RULE (default - directives take precedence)",
+            "- By default, detect the language of the user's question and respond in that SAME language.",
+            "- If the question is in Chinese, respond in Chinese. If in Japanese, respond in Japanese.",
+            "- IMPORTANT: The DIRECTIVES section above has HIGHER PRIORITY than this rule.",
+            "  If a directive specifies a language (e.g. 'Always respond in French'), follow the directive.",
+            "",
+            "## CRITICAL RULES",
+            "- ONLY use information from tool results - no external knowledge or guessing",
+            "- You SHOULD synthesize, infer, and reason from the retrieved memories",
+            "- You MUST search before saying you don't have information",
+            "",
+            "## How to Reason",
+            "- If memories mention someone did an activity, you can infer they likely enjoyed it",
+            "- Synthesize a coherent narrative from related memories",
+            "- Be a thoughtful interpreter, not just a literal repeater",
+            "- When the exact answer isn't stated, use what IS stated to give a best-effort answer AND surface any uncertainty — never invent confidence the data doesn't support.",
+            "",
+            "## Temporal Reasoning",
+            "Every memory and observation carries temporal fields in the JSON tool result:",
+            "- `mentioned_at` — when the user retained the fact (always set).",
+            "- `occurred_start` / `occurred_end` — when the underlying event happened (optional, set for dated events).",
+            "",
+            "When facts about the SAME facet conflict — counts, statuses, ownership, location, presence, etc. — the fact with the LATEST `mentioned_at` is authoritative. Later statements SUPERSEDE earlier ones. Do NOT average, sum, or favor an explicitly-dated fact over a more recent one.",
+            "",
+            "Example: three count facts come back from recall:",
+            "  - 'Team has 2 engineers' (mentioned_at=T1)",
+            "  - 'Team now has 1 engineer' (mentioned_at=T2, occurred_start=2026-05-25)",
+            "  - 'Team has 5 engineers' (mentioned_at=T3)",
+            "with T1 < T2 < T3. The current size is 5, not 1. Then apply later events (e.g. someone leaving after T3) on top of that.",
+            "",
+            "For reconstructing a TIMELINE of events, order by `occurred_start` / `occurred_end` (when things happened), not `mentioned_at` (when they were retained).",
+            "",
+            "## Conflicts and Ambiguity",
+            "Not every retrieval converges on a single answer. Distinguish two cases:",
+            "",
+            "- RESOLVABLE conflict — the temporal rule above (latest `mentioned_at` wins) cleanly picks a winner. Apply it and move on.",
+            "- UNRESOLVABLE ambiguity — the data is internally inconsistent in a way the temporal rule does NOT settle. Examples: a recent aggregate (count, total) is incompatible with the individual entities you can enumerate; two equally-recent facts disagree and no later fact resolves them; events are described but their relative order is unclear; the user's own statements contradict each other and nothing later reconciles them.",
+            "",
+            "When the data is genuinely ambiguous: SAY SO in your answer. Name the conflicting facts. Explain why they can't be reconciled. Give a range or a best-effort interpretation with explicit uncertainty (e.g. 'between X and Y, depending on [unresolved condition]'; or 'the most recent statement says A, but B was stated earlier and the gap isn't accounted for in any later fact').",
+            "",
+            "An honest 'the data is inconsistent about X' beats a confident wrong answer. Do NOT pick a value arbitrarily, average conflicting values, or smooth over gaps in confident prose. Acknowledging ambiguity is a successful answer, not a failure mode.",
+            "",
+            "## Showing Your Reasoning",
+            "For any answer that resolves a conflict between facts, applies events on top of a count or status, or settles an ambiguity — show your work in the answer text so a reader can audit it.",
+            "",
+            "Walk through these steps explicitly:",
+            "1. **List the relevant facts in `mentioned_at` order (oldest → newest)**, each with the value it asserts. Use a short bulleted list.",
+            "2. **Identify the authoritative fact** under the temporal rule (latest `mentioned_at` for the contested facet). Write its date down.",
+            "3. **List candidate events to apply on top** — anything that changes the count, status, or state being asked about. Write each event's date down next to it.",
+            "4. **Sanity-check each candidate event against the authoritative date** — for EVERY event from step 3, write a one-line check in the form `<event> (<event_date>) vs authoritative (<authoritative_date>) → BEFORE/AFTER → KEEP/DROP`. If the event is BEFORE or EQUAL to the authoritative date, DROP it: it is already reflected in the authoritative fact, and applying it again is double-counting. This is the single most common mistake — do not skip this step even if you feel confident.",
+            "5. **Show the arithmetic or derivation explicitly** using only the KEEP events from step 4 — e.g. 'authoritative count = 5 (at 2025-02-12); kept events: Shadow died (2025-03-12, AFTER); 5 − 1 = 4'.",
+            "6. If step 2 or 3 cannot be done cleanly (no clear winner, overlapping timestamps, unclear event order), STOP and surface this as an UNRESOLVABLE ambiguity per the section above — do not fabricate a derivation.",
+            "",
+            "For simple factual lookups that don't involve conflict or arithmetic, you can answer directly without this scaffolding.",
+            "",
+            "## HIERARCHICAL RETRIEVAL STRATEGY",
+            "",
+        ]
+    )
+
+    # Assemble the retrieval-level blocks for whatever tools are exposed.
+    # MM and Observations bodies are unconditional; recall's fallback wording
+    # adapts to which upstream tools precede it (telling the LLM to fall back
+    # to a tool that isn't in its list is the bug at the root of #1724).
+    levels: list[tuple[str, list[str]]] = []
+    if has_mental_models:
+        levels.append(
+            (
+                "MENTAL MODELS (search_mental_models)",
+                [
+                    "- User-curated summaries about specific topics",
+                    "- HIGHEST quality - manually created and maintained",
+                    "- If a relevant mental model exists and is FRESH, it may fully answer the question",
+                    "- Check `is_stale` field - if stale, also verify with lower levels",
+                ],
+            )
+        )
+    if include_observations:
+        levels.append(
+            (
+                "OBSERVATIONS (search_observations)",
+                [
+                    "- Auto-consolidated knowledge from memories",
+                    "- Check `is_stale` field - if stale, ALSO use recall() to verify",
+                    "- Good for understanding patterns and summaries",
+                ],
+            )
+        )
+    recall_body = ["- Individual memories (world facts and experiences)"]
+    if has_mental_models and include_observations:
+        recall_body.extend(
+            [
+                "- Use when: no mental models/observations exist, they're stale, or you need specific details",
+                "- MANDATORY: If search_mental_models and search_observations both return 0 results, you MUST call recall() before giving up",
+                "- This is the source of truth that other levels are built from",
+                "",
+                "**Tool result ordering:** `recall()` and `search_observations()` return their `memories` / `observations` arrays sorted by SEMANTIC RELEVANCE to the query, NOT by time. The POSITION of an entry tells you nothing about when it was retained. For any temporal reasoning — recency, supersession, applying events on top of a state — IGNORE the position and read the per-entry `mentioned_at` field (and `occurred_start` / `occurred_end` for events).",
+                "",
+            ]
+        )
+    elif has_mental_models:
+        recall_body.extend(
+            [
+                "- Use when: no mental model exists, it's stale, or you need specific details",
+                "- MANDATORY: If search_mental_models returns 0 results, you MUST call recall() before giving up",
+                "- This is the source of truth that mental models are built from",
+            ]
+        )
+    elif include_observations:
+        recall_body.extend(
+            [
+                "- Use when: no observations exist, they're stale, or you need specific details",
+                "- MANDATORY: If search_observations returns 0 results or count=0, you MUST call recall() before giving up",
+                "- This is the source of truth that observations are built from",
+                "",
+                "**Tool result ordering:** `recall()` and `search_observations()` return their `memories` / `observations` arrays sorted by SEMANTIC RELEVANCE to the query, NOT by time. The POSITION of an entry tells you nothing about when it was retained. For any temporal reasoning — recency, supersession, applying events on top of a state — IGNORE the position and read the per-entry `mentioned_at` field (and `occurred_start` / `occurred_end` for events).",
+                "",
+            ]
+        )
+    else:
+        recall_body.extend(
+            [
+                "- MANDATORY: Call recall() to gather facts before giving up",
+                "- This is the source of truth.",
+            ]
+        )
+    levels.append(("RAW FACTS (recall) - Ground Truth", recall_body))
+
+    # Position-dependent suffix for upstream tools; recall already carries its
+    # fixed "- Ground Truth" suffix in the header text.
+    suffixes = [""] * len(levels)
+    if len(levels) >= 2:
+        suffixes[0] = " - Try First"
+    if len(levels) == 3:
+        suffixes[1] = " - Second Priority"
+
+    if len(levels) == 1:
+        parts.append("You have access to ONE level of knowledge:")
+    else:
+        word = "TWO" if len(levels) == 2 else "THREE"
+        parts.append(f"You have access to {word} levels of knowledge. Use them in this order:")
+    parts.append("")
+    for idx, ((header, body), suffix) in enumerate(zip(levels, suffixes), 1):
+        parts.append(f"### {idx}. {header}{suffix}")
+        parts.extend(body)
+        parts.append("")
+
+    parts.extend(
+        [
+            "## Query Strategy",
+            "recall() uses semantic search. NEVER just echo the user's question - decompose it into targeted searches:",
+            "",
+            "BAD: User asks 'recurring lesson themes between students' → recall('recurring lesson themes between students')",
+            "GOOD: Break it down into component searches:",
+            "  1. recall('lessons') - find all lesson-related memories",
+            "  2. recall('teaching sessions') - alternative phrasing",
+            "  3. recall('student progress') - find student-related memories",
+            "",
+            "Think: What ENTITIES and CONCEPTS does this question involve? Search for each separately.",
+            "",
+        ]
+    )
+
+    # Add budget guidance
+    if budget:
+        budget_lower = budget.lower()
+        if budget_lower == "low":
+            parts.extend(
+                [
+                    "## RESEARCH DEPTH: SHALLOW (Quick Response)",
+                    "- Prioritize speed over completeness",
+                    "- If mental models or observations provide a reasonable answer, stop there",
+                    "- Only dig deeper if the initial results are clearly insufficient",
+                    "- Prefer a quick overview rather than exhaustive details",
+                    "- Answer promptly with available information",
+                    "",
+                ]
+            )
+        elif budget_lower == "mid":
+            parts.extend(
+                [
+                    "## RESEARCH DEPTH: MODERATE (Balanced)",
+                    "- Balance thoroughness with efficiency",
+                    "- Check multiple sources when the question warrants it",
+                    "- Verify stale data if it's central to the answer",
+                    "- Don't over-explore, but ensure reasonable coverage",
+                    "",
+                ]
+            )
+        elif budget_lower == "high":
+            parts.extend(
+                [
+                    "## RESEARCH DEPTH: DEEP (Thorough Exploration)",
+                    "- Explore comprehensively before answering",
+                    "- Search across all available knowledge levels",
+                    "- Use multiple query variations to ensure coverage",
+                    "- Verify information across different retrieval levels",
+                    "- Use expand() to get full context on important memories",
+                    "- Take time to synthesize a complete, well-researched answer",
+                    "",
+                ]
+            )
+
+    parts.append("## Workflow")
+
+    steps: list[str] = []
+    if has_mental_models:
+        steps.append("First, try search_mental_models() - check if a curated summary exists")
+    if include_observations:
+        if has_mental_models:
+            steps.append("If no mental model or it's stale, try search_observations() for consolidated knowledge")
+        else:
+            steps.append("First, try search_observations() - check for consolidated knowledge")
+    # Recall step phrasing varies with whichever upstream tool(s) precede it.
+    if include_observations:
+        steps.append(
+            "If observations are stale OR you need specific details, use recall() for raw facts"
+            if has_mental_models
+            else "If search_observations returns 0 results OR observations are stale, you MUST call recall() for raw facts"
+        )
+    elif has_mental_models:
+        steps.append("If no mental model or it's stale, use recall() for raw facts")
+    else:
+        steps.append("Call recall() to gather raw facts")
+    steps.append("Use expand() if you need more context on specific memories")
+    steps.append("When ready, call done() with your answer and supporting IDs")
+    parts.extend(f"{idx}. {step}" for idx, step in enumerate(steps, 1))
+
+    parts.extend(
+        [
+            "",
+            "## Output Format: Well-Formatted Markdown Answer",
+            "Call done() with a well-formatted markdown 'answer' field.",
+            "- USE markdown formatting for structure (headers, lists, bold, italic, code blocks, tables, etc.)",
+            "- CRITICAL: Add blank lines before and after block elements (tables, code blocks, lists)",
+            "- Format for clarity and readability with proper spacing and hierarchy",
+            "- NEVER include memory IDs, UUIDs, or 'Memory references' in the answer text",
+            "- Put IDs ONLY in the memory_ids/mental_model_ids/observation_ids arrays, not in the answer",
+            "- CRITICAL: This is a NON-CONVERSATIONAL system. NEVER ask follow-up questions, offer further assistance, or suggest next steps. Your answer must be complete and self-contained. The user cannot reply.",
+        ]
+    )
+
+    parts.append("")
+    parts.append(f"## Memory Bank: {name}")
+
+    if mission:
+        parts.append(f"Mission: {mission}")
+
+    # Disposition traits
+    disposition = bank_profile.get("disposition", {})
+    if disposition:
+        traits = []
+        if "skepticism" in disposition:
+            traits.append(f"skepticism={disposition['skepticism']}")
+        if "literalism" in disposition:
+            traits.append(f"literalism={disposition['literalism']}")
+        if "empathy" in disposition:
+            traits.append(f"empathy={disposition['empathy']}")
+        if traits:
+            parts.append(f"Disposition: {', '.join(traits)}")
+
+    if context:
+        parts.append(f"\n## Additional Context\n{context}")
+
+    # Add directive reminder at the END for recency effect
+    if directives:
+        parts.append(build_directives_reminder(directives))
+
+    return "\n".join(parts)
+
+
+def build_agent_prompt(
+    query: str,
+    context_history: list[dict],
+    bank_profile: dict,
+    additional_context: str | None = None,
+) -> str:
+    """Build the user prompt for the reflect agent."""
+    parts = []
+
+    # Bank identity
+    name = bank_profile.get("name", "Assistant")
+    mission = bank_profile.get("mission", "")
+
+    parts.append(f"## Memory Bank Context\nName: {name}")
+    if mission:
+        parts.append(f"Mission: {mission}")
+
+    # Disposition traits if present
+    disposition = bank_profile.get("disposition", {})
+    if disposition:
+        traits = []
+        if "skepticism" in disposition:
+            traits.append(f"skepticism={disposition['skepticism']}")
+        if "literalism" in disposition:
+            traits.append(f"literalism={disposition['literalism']}")
+        if "empathy" in disposition:
+            traits.append(f"empathy={disposition['empathy']}")
+        if traits:
+            parts.append(f"Disposition: {', '.join(traits)}")
+
+    # Additional context from caller
+    if additional_context:
+        parts.append(f"\n## Additional Context\n{additional_context}")
+
+    # Tool call history
+    if context_history:
+        parts.append("\n## Tool Results (synthesize and reason from this data)")
+        for i, entry in enumerate(context_history, 1):
+            tool = entry["tool"]
+            output = entry["output"]
+            # Format as proper JSON for LLM readability
+            try:
+                output_str = json.dumps(output, indent=2, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                output_str = str(output)
+            parts.append(f"\n### Call {i}: {tool}\n```json\n{output_str}\n```")
+
+    # The question
+    parts.append(f"\n## Question\n{query}")
+
+    # Instructions
+    if context_history:
+        parts.append(
+            "\n## Instructions\n"
+            "Based on the tool results above, either call more tools or provide your final answer. "
+            "Synthesize and reason from the data - make reasonable inferences when helpful. "
+            "If you have related information, use it to give the best possible answer."
+        )
+    else:
+        parts.append(
+            "\n## Instructions\n"
+            "Start by searching for relevant information using the hierarchical retrieval strategy:\n"
+            "1. Try search_mental_models() first for curated summaries\n"
+            "2. Try search_observations() for consolidated knowledge\n"
+            "3. Use recall() for specific details or to verify stale data"
+        )
+
+    return "\n".join(parts)
+
+
+def build_final_prompt(
+    query: str,
+    context_history: list[dict],
+    bank_profile: dict,
+    additional_context: str | None = None,
+    max_context_tokens: int = 100_000,
+) -> str:
+    """Build the final prompt when forcing a text response (no tools)."""
+    parts = []
+
+    # Bank identity
+    name = bank_profile.get("name", "Assistant")
+    mission = bank_profile.get("mission", "")
+
+    parts.append(f"## Memory Bank Context\nName: {name}")
+    if mission:
+        parts.append(f"Mission: {mission}")
+
+    # Disposition traits if present
+    disposition = bank_profile.get("disposition", {})
+    if disposition:
+        traits = []
+        if "skepticism" in disposition:
+            traits.append(f"skepticism={disposition['skepticism']}")
+        if "literalism" in disposition:
+            traits.append(f"literalism={disposition['literalism']}")
+        if "empathy" in disposition:
+            traits.append(f"empathy={disposition['empathy']}")
+        if traits:
+            parts.append(f"Disposition: {', '.join(traits)}")
+
+    # Additional context from caller
+    if additional_context:
+        parts.append(f"\n## Additional Context\n{additional_context}")
+
+    # Tool call history — include as many entries as fit within the token budget,
+    # preferring the most recent calls (they tend to be the most targeted).
+    if context_history:
+        parts.append("\n## Retrieved Data (synthesize and reason from this data)")
+        token_budget = int(max_context_tokens * _FINAL_PROMPT_CONTEXT_FRACTION)
+        # Render entries newest-first, then reverse so the prompt reads chronologically.
+        rendered: list[str] = []
+        truncated = False
+        for entry in reversed(context_history):
+            tool = entry["tool"]
+            output = entry["output"]
+            try:
+                output_str = json.dumps(output, indent=2, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                output_str = str(output)
+            block = f"\n### From {tool}:\n```json\n{output_str}\n```"
+            block_tokens = count_cl100k_tokens(block)
+            if block_tokens > token_budget:
+                truncated = True
+                break
+            rendered.append(block)
+            token_budget -= block_tokens
+        for block in reversed(rendered):
+            parts.append(block)
+        if truncated:
+            parts.append("\n*Note: Some earlier tool results were omitted to stay within the context window.*")
+    else:
+        parts.append("\n## Retrieved Data\nNo data was retrieved.")
+
+    # The question
+    parts.append(f"\n## Question\n{query}")
+
+    # Final instructions
+    parts.append(
+        "\n## Instructions\n"
+        "Provide a thoughtful answer by synthesizing and reasoning from the retrieved data above. "
+        "You can make reasonable inferences from the memories, but don't completely fabricate information. "
+        "If the exact answer isn't stated, use what IS stated to give the best possible answer. "
+        "Only say 'I don't have information' if the retrieved data is truly unrelated to the question.\n\n"
+        "IMPORTANT: Output ONLY the final answer. Do NOT include meta-commentary like "
+        '"I\'ll search..." or "Let me analyze...". Do NOT explain your reasoning process. '
+        "Just provide the direct synthesized answer."
+    )
+
+    return "\n".join(parts)
+
+
+_FINAL_SYSTEM_PROMPT_BASE = """CRITICAL: You MUST ONLY use information from retrieved tool results. NEVER make up names, people, events, or entities.
+
+{role_section}
+
+Your approach:
+- Reason over the retrieved memories to answer the question
+- Make reasonable inferences when the exact answer isn't explicitly stated
+- Connect related memories to form a complete picture
+- Be helpful - if you have related information, use it to give the best possible answer
+- ONLY use information from tool results - no external knowledge or guessing
+
+Only say "I don't have information" if the retrieved data is truly unrelated to the question.
+
+FORMATTING: Use proper markdown formatting in your answer:
+- Headers (##, ###) for sections
+- Lists (bullet or numbered) for enumerations
+- Bold/italic for emphasis
+- Tables with proper syntax (ensure blank line before and after)
+- Code blocks where appropriate
+- CRITICAL: Always add blank lines before and after block elements (tables, code blocks, lists)
+- Proper spacing between sections
+
+CRITICAL: Output ONLY the final synthesized answer. Do NOT include:
+- Meta-commentary about what you're doing ("I'll search...", "Let me analyze...")
+- Explanations of your reasoning process
+- Descriptions of your approach
+Just provide the direct answer with proper markdown formatting.
+
+CRITICAL: This is a NON-CONVERSATIONAL system. NEVER ask follow-up questions, offer to search again, suggest alternatives, or end with anything like "Would you like me to..." or "Let me know if...". The user cannot reply. Your answer must be complete and self-contained."""
+
+
+# The final synthesis is a SEPARATE LLM call with its own system prompt — the
+# agent/reasoning system prompt (which carries directives and the language rule)
+# is NOT in scope here. So this default language rule, and the directives, must
+# be repeated for the answer-writing model. Without it, weaker models drift to
+# English even when the question/facts are in another language or a directive
+# demands a specific one (the cause of flaky multilingual reflect tests).
+_FINAL_LANGUAGE_RULE = (
+    "## LANGUAGE\n"
+    "- Respond in the SAME language as the user's question "
+    "(e.g. a question in Chinese gets a Chinese answer; Japanese → Japanese).\n"
+    "- If a directive above specifies a response language, follow the directive — "
+    "it takes precedence over this default."
+)
+
+
+def build_final_system_prompt(
+    mission: str | None = None,
+    llm_output_language: str | None = None,
+    directives: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build the final synthesis system prompt, using mission as role when set.
+
+    ``directives`` are re-injected here (they live in the agent/reasoning prompt,
+    but the final answer is a separate call) so output-constraining rules — most
+    visibly response language — are honoured by the model that actually writes
+    the answer. When ``llm_output_language`` is set it forces that language
+    regardless of the query/source/directive language (config override wins).
+    """
+    from hindsight_api.engine.prompt_utils import escape_for_prompt, output_language_directive
+
+    role_section = escape_for_prompt(mission.strip()) if mission else _DEFAULT_FINAL_ROLE
+
+    parts = [build_directives_section(directives) if directives else ""]
+    parts.append(_FINAL_SYSTEM_PROMPT_BASE.format(role_section=role_section))
+    parts.append(_FINAL_LANGUAGE_RULE)
+    parts.append(build_directives_reminder(directives) if directives else "")
+
+    return "\n\n".join(p.strip() for p in parts if p.strip()) + output_language_directive(llm_output_language)
+
+
+# Backward-compatible constant for non-identity missions
+FINAL_SYSTEM_PROMPT = build_final_system_prompt()
+
+
+STRUCTURED_DELTA_SYSTEM_PROMPT = """You are integrating *new information* into an existing structured document.
+
+You will be given:
+1. TOPIC — the question this document answers. Content that does not help
+   answer this question is OFF-TOPIC and should be removed.
+2. CURRENT DOCUMENT (JSON) — the existing structured mental model. Each section
+   has a stable ``id``, a ``heading``, a ``level`` (1..6), and an ordered list
+   of ``blocks``. Blocks are typed: ``paragraph``, ``bullet_list``,
+   ``ordered_list``, or ``code``.
+3. NEW INFORMATION SYNTHESIS (markdown) — a synthesis showing how the new facts
+   relate to the document's topic. Use it to understand context and relevance,
+   but do NOT copy its formatting or wording wholesale.
+4. SUPPORTING FACTS — observations and facts created since the last refresh.
+   These are genuinely new — they were NOT available when the current document
+   was written.
+
+Your task: output a JSON object ``{"operations": [...]}``. Applied to CURRENT
+DOCUMENT, the operations must produce a document that best answers the TOPIC
+by integrating the new facts.
+
+RULES
+- These facts are NEW since the last refresh. The existing document already
+  captures all prior information from earlier refreshes. Your job is to
+  integrate the new facts into the existing document.
+- **Preserve existing content**: The current document was built from prior facts
+  that you cannot see. Do NOT remove or replace existing sections just because
+  the new facts do not reference them. Only remove content when the new facts
+  explicitly contradict or supersede it.
+- **Merge overlapping topics**: When new facts cover topics that overlap with
+  existing sections, merge the new information INTO the existing section
+  rather than creating duplicates. When new facts provide more specific or
+  authoritative guidance on a topic already covered generically, update the
+  existing content to reflect the more specific guidance.
+- **Preserve examples**: Concrete examples, before/after pairs, sample sentences,
+  and illustrative ✅/❌ comparisons are MORE valuable than abstract rules.
+  When facts contain examples, include them. Never drop an example to make
+  room for an abstract restatement of the same point.
+- Operations target sections by ``section_id`` (use the ``id`` field of the
+  section in CURRENT DOCUMENT, NOT the heading). Block operations target
+  blocks by ``index`` (0-based, against the section's current block list).
+- **Add** new content with ``append_block``, ``insert_block``, or ``add_section``
+  when facts introduce information not yet covered. Prefer extending an
+  existing section over creating a new one.
+- **Update** existing content with ``replace_block`` or ``replace_section_blocks``
+  when new facts provide corrections, updates, or more specific information
+  about topics already in the document.
+- **Remove** content with ``remove_block`` or ``remove_section`` ONLY when
+  the new facts explicitly contradict or supersede it.
+- NEVER emit operations whose only effect is to reword unchanged content.
+- NEVER emit operations to "normalize" formatting (numbered → bulleted, casing
+  changes, paragraph → list, etc).
+- Every operation MUST be justifiable by a specific fact in SUPPORTING FACTS.
+- Output ``{"operations": []}`` only if the new facts are already reflected
+  in the document (e.g., from a concurrent update).
+
+ALLOWED OPERATIONS (each line shows the JSON shape)
+- ``{"op": "append_block", "section_id": "...", "block": {...}}``
+- ``{"op": "insert_block", "section_id": "...", "index": N, "block": {...}}``
+- ``{"op": "replace_block", "section_id": "...", "index": N, "block": {...}}``
+- ``{"op": "remove_block", "section_id": "...", "index": N}``
+- ``{"op": "add_section", "heading": "...", "level": 2, "blocks": [...], "after_section_id": "..."}``
+- ``{"op": "remove_section", "section_id": "..."}``
+- ``{"op": "replace_section_blocks", "section_id": "...", "blocks": [...]}``
+- ``{"op": "rename_section", "section_id": "...", "new_heading": "..."}``
+
+Block shapes
+- ``{"type": "paragraph", "text": "..."}``
+- ``{"type": "bullet_list", "items": ["...", "..."]}``
+- ``{"type": "ordered_list", "items": ["...", "..."]}``
+- ``{"type": "code", "language": "json", "text": "..."}``
+
+OUTPUT FORMAT
+Return ONLY a single JSON object on its own, with no prose before or after,
+no markdown code fences, no commentary. The object must have exactly one
+top-level key, ``operations``, whose value is an array of operation objects
+(empty array when nothing changes).
+
+Examples
+- No changes needed → ``{"operations": []}``
+- Add one bullet to an existing "Members" section →
+  ``{"operations": [{"op": "append_block", "section_id": "members",
+  "block": {"type": "bullet_list", "items": ["Carol — junior engineer"]}}]}``
+- Replace a paragraph that has been corrected by new facts →
+  ``{"operations": [{"op": "replace_block", "section_id": "overview",
+  "index": 0, "block": {"type": "paragraph", "text": "Updated summary."}}]}``
+- Remove an obsolete block →
+  ``{"operations": [{"op": "remove_block", "section_id": "status", "index": 2}]}``
+
+JSON STRING RULES (critical)
+- Every ``text`` and ``items`` string must be valid JSON: escape ``"`` as ``\\"``,
+  backslashes as ``\\\\``, and newlines as ``\\n``. Do not use raw backticks inside
+  strings unless needed; prefer plain quotes for file paths.
+- ``replace_block``, ``insert_block``, and ``remove_block`` MUST include ``index`` (0-based block position in that section). Use ``replace_section_blocks`` only when replacing every block in a section.
+
+- Do not append extra ``]`` or ``}`` after the closing ``}`` of the root object."""
+
+_STRUCTURED_DELTA_DEFAULT_MAX_INPUT_TOKENS = 24_000
+
+
+def _truncate_cl100k(text: str, max_tokens: int) -> str:
+    """Truncate text to at most max_tokens using cl100k_base."""
+    if max_tokens <= 0:
+        return ""
+    from .tokenization import count_cl100k_tokens
+
+    if count_cl100k_tokens(text) <= max_tokens:
+        return text
+    enc = __import__("tiktoken").get_encoding("cl100k_base")
+    return enc.decode(enc.encode(text)[:max_tokens])
+
+
+def _fit_structured_delta_prompt_parts(
+    *,
+    source_query: str,
+    current_document_json: str,
+    candidate_markdown: str,
+    facts_block: str,
+    budget_hint: str,
+    task_footer: str,
+    max_input_tokens: int,
+) -> tuple[str, str, str, bool]:
+    """Shrink large prompt sections to fit within max_input_tokens (cl100k estimate)."""
+    from .tokenization import count_cl100k_tokens
+
+    fixed = (
+        f"## Topic\n{source_query}\n\n"
+        f"## CURRENT DOCUMENT (apply ops to this; reference section ids as listed)\n"
+        f"```json\n\n```\n\n"
+        f"## NEW INFORMATION SYNTHESIS (context for how new facts relate to the topic)\n"
+        f"```markdown\n\n```\n\n"
+        f"## SUPPORTING FACTS (new since last refresh — integrate these)\n"
+        f"{budget_hint}\n\n"
+        f"{task_footer}"
+    )
+    facts_header = "## SUPPORTING FACTS (new since last refresh — integrate these)\n"
+    facts_prefix_tokens = count_cl100k_tokens(facts_header)
+    reserved_facts = min(4096, max(512, max_input_tokens // 8))
+    doc_budget = max(1024, (max_input_tokens - count_cl100k_tokens(fixed) - reserved_facts) * 55 // 100)
+    cand_budget = max(512, (max_input_tokens - count_cl100k_tokens(fixed) - reserved_facts) * 30 // 100)
+    facts_budget = max(256, reserved_facts - facts_prefix_tokens)
+    doc_json = _truncate_cl100k(current_document_json, doc_budget)
+    candidate = _truncate_cl100k(candidate_markdown, cand_budget)
+    facts_body = _truncate_cl100k(facts_block, facts_budget)
+    truncated = doc_json != current_document_json or candidate != candidate_markdown or facts_body != facts_block
+    return doc_json, candidate, facts_body, truncated
+
+
+def build_structured_delta_prompt(
+    *,
+    current_document_json: str,
+    candidate_markdown: str,
+    supporting_facts: list[dict[str, Any]],
+    source_query: str,
+    max_output_tokens: int | None = None,
+    max_input_tokens: int | None = None,
+) -> str:
+    """Build the user prompt for a structured-delta mental model refresh.
+
+    The LLM's job is to emit operations against ``current_document_json``;
+    the surrounding ``candidate_markdown`` and ``supporting_facts`` are
+    references for *what new information exists*, not templates to mimic.
+
+    ``max_output_tokens`` is surfaced in the prompt so the model can keep its
+    op list within the provider's response cap. The actual cap is enforced by
+    the caller; this is just an advisory anchor — without it the model often
+    returns op lists whose JSON gets truncated mid-string.
+    """
+    fact_lines: list[str] = []
+    for f in supporting_facts:
+        fid = f.get("id", "")
+        text = (f.get("text") or "").strip().replace("\n", " ")
+        ftype = f.get("type", "")
+        fact_lines.append(f"- [{ftype}:{fid}] {text}")
+    facts_block = "\n".join(fact_lines) if fact_lines else "(no supporting facts retrieved)"
+
+    budget_hint = ""
+    if max_output_tokens is not None:
+        budget_hint = (
+            f"\n\n## Output budget\n"
+            f"Your JSON response must fit within ~{max_output_tokens} tokens. If you "
+            "would need more than this to express every change, prefer the highest-"
+            "leverage edits first (a few ``replace_section_blocks`` ops over many "
+            "block-level ops) so the response always parses as valid JSON."
+        )
+
+    task_footer = (
+        "## Task\n"
+        "Output a JSON object matching the operations schema. Integrate the new "
+        "supporting facts into CURRENT DOCUMENT. Add, update, or remove content "
+        "as needed. Preserve unchanged sections and blocks by not mentioning them."
+    )
+    input_cap = max_input_tokens if max_input_tokens is not None else _STRUCTURED_DELTA_DEFAULT_MAX_INPUT_TOKENS
+    doc_json, candidate, facts_body, input_truncated = _fit_structured_delta_prompt_parts(
+        source_query=source_query,
+        current_document_json=current_document_json,
+        candidate_markdown=candidate_markdown,
+        facts_block=facts_block,
+        budget_hint=budget_hint,
+        task_footer=task_footer,
+        max_input_tokens=input_cap,
+    )
+    truncation_note = ""
+    if input_truncated:
+        truncation_note = (
+            "\n\n*Note: Document, synthesis, or facts were truncated to fit the model "
+            "context window. Prefer minimal, high-leverage operations.*"
+        )
+
+    return (
+        f"## Topic\n{source_query}\n\n"
+        f"## CURRENT DOCUMENT (apply ops to this; reference section ids as listed)\n"
+        f"```json\n{doc_json}\n```\n\n"
+        f"## NEW INFORMATION SYNTHESIS (context for how new facts relate to the topic)\n"
+        f"```markdown\n{candidate}\n```\n\n"
+        f"## SUPPORTING FACTS (new since last refresh — integrate these)\n{facts_body}"
+        f"{budget_hint}{truncation_note}\n\n"
+        f"{task_footer}"
+    )
+
+
+DELTA_SYSTEM_PROMPT = """You are performing a surgical delta update to an existing mental model document.
+
+You will be given:
+1. CURRENT DOCUMENT: the existing mental model content (markdown).
+2. CANDIDATE UPDATE: a freshly generated synthesis based on the latest retrieved memories.
+3. SUPPORTING FACTS: the observations and facts that support the CANDIDATE UPDATE.
+
+Your task: produce an updated version of the CURRENT DOCUMENT that reflects the new reality, with the MINIMUM possible changes.
+
+ABSOLUTE RULES:
+- Preserve unchanged content BYTE-FOR-BYTE. If a sentence, heading, bullet, code block, or section is still accurate according to the CANDIDATE UPDATE and SUPPORTING FACTS, copy it verbatim — same wording, same punctuation, same whitespace, same markdown structure.
+- Do NOT reformat, rephrase, or re-style content that is still accurate. No "light edits for clarity", no reordering for flow, no synonym swaps.
+- Remove content that is contradicted by the CANDIDATE UPDATE or SUPPORTING FACTS (stale content).
+- Add new content ONLY when the SUPPORTING FACTS contain information not already in the CURRENT DOCUMENT.
+- When adding new content, prefer appending to an existing relevant section. Creating a new section is acceptable when the new information does not fit any existing section.
+- When creating a new section, match the heading style, tone, and formatting conventions used in the CURRENT DOCUMENT.
+- Every assertion in your output MUST be grounded in either (a) the CURRENT DOCUMENT (preserved) or (b) the SUPPORTING FACTS. Never introduce outside knowledge.
+- If nothing in the SUPPORTING FACTS contradicts or extends the CURRENT DOCUMENT, return the CURRENT DOCUMENT UNCHANGED, character for character.
+
+OUTPUT FORMAT:
+- Output ONLY the updated markdown document. No preamble, no explanation, no diff markers, no commentary.
+- Do not wrap the output in code fences unless the CURRENT DOCUMENT itself was entirely a code fence."""
+
+
+def build_delta_prompt(
+    *,
+    current_content: str,
+    candidate_content: str,
+    supporting_facts: list[dict[str, Any]],
+    source_query: str,
+) -> str:
+    """Build the user prompt for a delta-mode mental model refresh.
+
+    Args:
+        current_content: The existing mental model content (to preserve as much as possible).
+        candidate_content: Fresh synthesis from the reflect agent reflecting new reality.
+        supporting_facts: Flat list of fact dicts (id, text, type) supporting the candidate.
+        source_query: The mental model's source query, for topical framing.
+    """
+    fact_lines: list[str] = []
+    for f in supporting_facts:
+        fid = f.get("id", "")
+        text = (f.get("text") or "").strip().replace("\n", " ")
+        ftype = f.get("type", "")
+        fact_lines.append(f"- [{ftype}:{fid}] {text}")
+    facts_block = "\n".join(fact_lines) if fact_lines else "(no supporting facts retrieved)"
+
+    return (
+        f"## Topic\n{source_query}\n\n"
+        f"## CURRENT DOCUMENT\n```markdown\n{current_content}\n```\n\n"
+        f"## CANDIDATE UPDATE\n```markdown\n{candidate_content}\n```\n\n"
+        f"## SUPPORTING FACTS\n{facts_block}\n\n"
+        "## Task\n"
+        "Produce the updated mental model document by applying the minimum necessary changes "
+        "to CURRENT DOCUMENT so that it reflects CANDIDATE UPDATE and SUPPORTING FACTS. "
+        "Preserve unchanged content byte-for-byte. Output only the final markdown."
+    )

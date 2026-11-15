@@ -1,0 +1,27 @@
+# LifeBench Dataset Configuration
+
+name: "lifebench"
+version: "1.0"
+description: "LifeBench benchmark for conversational memory with 3-person scenarios"
+
+# Data configuration
+data:
+  path: "lifebench/lifebench_locomo_3people.json"  # Relative to evaluation/data/
+  format: "locomo"  # Uses LoCoMo-compatible format, no conversion needed
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"  # llm_judge | exact_match
+
+  # LLM Judge settings
+  llm:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+
+  num_runs: 3  # Number of judging runs per question
+
+  # Filter settings
+  # LifeBench categories: 0 (single-hop factoid), 1 (multi-hop), etc.
+  filter_category: [0, 1]  # Can use integers or strings, like [0, 1] or ["0", "1"]

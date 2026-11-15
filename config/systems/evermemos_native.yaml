@@ -1,0 +1,64 @@
+# EverMemOS Native System Configuration (Direct Python Import)
+
+name: "evermemos_native"
+version: "1.0"
+description: "EverMemOS memory system with direct Python import (no HTTP API)"
+
+# Use evermemos_native adapter (direct import)
+adapter: "evermemos_native"
+
+# Builder: no Docker needed, only venv check
+builder: "evermemos_native"
+
+# Buffering: accumulate all sessions until final session, then build index
+buffer_mode: true
+final_date: "2025-12-31"  # Match dia_id starting with this date to trigger index build
+
+llm:
+  provider: "openai"
+  model: "${LLM_MODEL:gpt-4o-mini}"
+  api_key: "${LLM_API_KEY}"
+  base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  temperature: 0.3
+  max_tokens: 32768
+
+# Embedding model configuration (for vector search)
+vectorize:
+  provider: "${VECTORIZE_PROVIDER:deepinfra}"
+  api_key: "${VECTORIZE_API_KEY}"
+  base_url: "${VECTORIZE_BASE_URL:https://api.deepinfra.com/v1}"
+  model: "${VECTORIZE_MODEL:Qwen/Qwen3-Embedding-4B}"
+  timeout: 30
+  batch_size: 256
+  max_concurrent: 5
+
+# Rerank model configuration (for result re-ranking)
+rerank:
+  enabled: true
+  provider: "${RERANK_PROVIDER:deepinfra}"
+  api_key: "${RERANK_API_KEY}"
+  base_url: "${RERANK_BASE_URL:https://api.deepinfra.com/v1}"
+  model: "${RERANK_MODEL:Qwen/Qwen3-Reranker-4B}"
+  timeout: 30
+  batch_size: 10
+  max_concurrent: 5
+
+add:
+  enable_semantic_extraction: false
+  enable_clustering: true
+  enable_profile_extraction: false
+
+search:
+  mode: "agentic"  # agentic | lightweight
+  lightweight_search_mode: "bm25_only"  # bm25_only | hybrid | emb_only
+  use_hybrid_search: true
+  use_reranker: true
+  hybrid_emb_candidates: 50
+  hybrid_bm25_candidates: 50
+  hybrid_rrf_k: 40
+
+answer:
+  temperature: 0
+  response_top_k: 30
+
+sample_parallel: true

@@ -1,0 +1,23 @@
+# LifeBench Offline Dataset Configuration
+# Offline variant: all QA ask_time forced to 2025-12-31
+
+name: "lifebench_offline"
+version: "1.0"
+description: "LifeBench offline variant, 10 persons / 3380 QA, all ask_time set to 2025-12-31"
+
+# Memory language setting
+memory_language: "zh"
+
+# Data configuration
+data:
+  path: "../datasets/lifebench_offline/lifebench_offline.json"
+  format: "lifebench"
+
+# Evaluation configuration
+evaluation:
+  type: "llm_judge"
+  llm:
+    model: "${LLM_MODEL}"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL:https://openrouter.ai/api/v1}"
+  num_runs: 3

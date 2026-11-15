@@ -1,0 +1,12 @@
+Knowledge graph context for answering the question.
+
+The context is organized in two sections:
+- "Nodes:" — each node has a machine-generated title (first words + keywords), followed by the full content between __node_content_start__ and __node_content_end__ markers. The content between the markers is the authoritative information.
+- "Connections:" — relationships between nodes in the format: source --[relationship_type]--> target. Some connections have an additional description in parentheses.
+
+Context:
+{{ context }}
+
+Question: {{ question }}
+
+Work through the reasoning steps, then give your final answer.

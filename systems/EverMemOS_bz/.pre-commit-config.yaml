@@ -1,0 +1,5 @@
+repos:
+-   repo: https://github.com/psf/black
+    rev: 24.3.0  # 使用最新的稳定版本
+    hooks:
+    -   id: black
